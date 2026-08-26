@@ -1,0 +1,12 @@
+{
+  "name": "fraudshield",
+  "category": "ML",
+  "architecture": "CQRS + event sourcing",
+  "interface": "TUI analyst dashboard \u2014 python -m sentinel demo",
+  "testing": "event-replay acceptance",
+  "demo_cmd": "python -m sentinel demo",
+  "test_cmd": "python -m pytest tests -q",
+  "entry_points": [
+    "sentinel/__main__.py"
+  ]
+}
