@@ -4,6 +4,11 @@ The asymmetry with events is deliberate and is the whole point of CQRS: a comman
 an imperative in the present tense that can fail validation; an event is a past-tense
 fact that already happened and can never be withdrawn. Commands are frozen so a
 handler cannot quietly edit its own input on the way through.
+
+Every command carries an optional ``command_id``. Leave it empty and the bus derives
+one from the command's own content, which is what makes a redelivered batch a repeat
+rather than a new instruction; set it explicitly when an upstream system already has
+a delivery id worth honouring.
 """
 from __future__ import annotations
 
@@ -28,6 +33,7 @@ class ObserveTransaction:
     is_online: int
     label: int = -1
     label_mode: str = ""
+    command_id: str = ""
 
     @classmethod
     def from_row(cls, row: Mapping[str, Any]) -> "ObserveTransaction":
@@ -73,6 +79,7 @@ class DispositionCase:
     disposition: Disposition
     analyst: str
     note: str = ""
+    command_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,3 +96,7 @@ class AdoptDetectionPolicy:
     avg_precision: float
     train_rows: int
     features: tuple[str, ...]
+    command_id: str = ""
+
+
+__all__ = ["AdoptDetectionPolicy", "DispositionCase", "ObserveTransaction"]

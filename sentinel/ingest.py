@@ -179,16 +179,15 @@ def build_event_log(
             features=tuple(FEATURES),
         )
     )
-    commands = list(to_commands(df))
-    written = bus.submit_many(commands, batch=batch, progress=progress)
+    outcome = bus.submit_many(to_commands(df), batch=batch, progress=progress)
     return BuiltLog(
         store=store,
         read_model=read_model,
         bus=bus,
         policy=policy,
         model_metrics=dict(metrics),
-        events_written=written + 1,
-        transactions=len(commands),
+        events_written=outcome.records + 1,
+        transactions=outcome.accepted,
     )
 
 
