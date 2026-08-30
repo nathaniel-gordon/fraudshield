@@ -171,6 +171,8 @@ def test_checkpoint_saves_lists_and_prunes(capsys, tmp_path_factory):
     assert main(["--log", path, "build", "--cards", "20", "--days", "5"]) == 0
     capsys.readouterr()  # drop the build chatter; only the json below is read
 
+    # build leaves one behind, so start from a known-empty table.
+    assert run_json(capsys, ["--log", path, "--json", "checkpoint", "--prune", "0"])["pruned"] == 1
     empty = run_json(capsys, ["--log", path, "--json", "checkpoint", "--list"])
     assert empty == {"checkpoints": [], "total": 0}
 
@@ -207,3 +209,29 @@ def test_checkpoint_human_output_mentions_the_sequence(capsys, cli_log):
     code, text = run(capsys, ["--log", cli_log, "checkpoint", "--list"])
     assert code == 0 and "fingerprint" in text
     assert run(capsys, ["--log", cli_log, "checkpoint", "--prune", "0"])[0] == 0
+
+
+def test_build_leaves_a_usable_checkpoint(capsys, tmp_path_factory):
+    """The console opens on a built log, so the fold it needs is stored at build time.
+
+    Its own log, because the tests above prune, and a checkpoint that only exists
+    when no earlier test ran would prove nothing about ``build``.
+    """
+    path = str(tmp_path_factory.mktemp("cpbuild") / "events.db")
+    assert main(["--log", path, "build", "--cards", "20", "--days", "5"]) == 0
+    capsys.readouterr()
+
+    listed = run_json(capsys, ["--log", path, "--json", "checkpoint", "--list"])
+    assert listed["total"] == 1
+
+    from sentinel.projections.checkpoints import rebuild_with_checkpoints
+    from sentinel.projections.registry import ReadModel
+    from sentinel.store.sqlite_store import EventStore
+
+    store = EventStore(path)
+    try:
+        resumed = rebuild_with_checkpoints(store)
+        assert resumed.resumed_from == store.last_seq
+        assert resumed.fingerprint() == ReadModel.rebuild(store).fingerprint()
+    finally:
+        store.close()

@@ -46,7 +46,7 @@ from .domain.policy import DEFAULT_FN_COST, DEFAULT_FP_COST, AlertPolicy, CostMo
 from .errors import SentinelError
 from .ingest import BuiltLog, CorpusConfig, alert_quality, build_event_log, load_corpus, wire
 from .obs import configure_logging, correlation_scope, get_logger
-from .projections.checkpoints import CheckpointStore
+from .projections.checkpoints import CheckpointStore, rebuild_with_checkpoints
 from .projections.registry import ReadModel
 from .query.audit import case_trail
 from .query.counterfactual import replay_variants, standard_sweep, sweep_rows
@@ -170,10 +170,17 @@ def ingest(args: argparse.Namespace, *, quiet: bool = False) -> Ingested:
     # The fitted model is deliberately *not* written to disk. Nothing reads it back —
     # the log carries every score that was ever computed — and a joblib file next to
     # the log is a pickle that some later command would be tempted to load.
+    #
+    # The read model, on the other hand, is worth keeping: it was just folded in full,
+    # and storing it here is what lets the console open on this log without repeating
+    # the fold. It is a cache of a pure function of the log, so a stale or missing one
+    # costs time and nothing else.
+    checkpoint = CheckpointStore(store).save(built.read_model)
     if not quiet:
         print()
         print(f"  model: {built.model_metrics}")
         print(f"  log:   {built.events_written:,} events -> {store.path}")
+        print(f"  checkpoint: read model saved at seq {checkpoint.seq:,}")
     return Ingested(built=built, corpus=df)
 
 
@@ -206,7 +213,7 @@ def _open_existing(log_path: str) -> tuple[EventStore, ReadModel, AlertPolicy]:
         rule_weight=header.event.rule_weight,
         rules_only_floor=header.event.rules_only_floor,
     )
-    return store, ReadModel.rebuild(store), policy
+    return store, rebuild_with_checkpoints(store), policy
 
 
 def cmd_dashboard(args: argparse.Namespace) -> int:

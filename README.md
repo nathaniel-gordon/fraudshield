@@ -171,10 +171,11 @@ Stated plainly, because the rest of this README is only worth reading if this se
 - **Projections are not memory-bounded.** `CaseQueueProjection` keeps every case and
   `CardProfileProjection` every card for the life of the process. The store streams,
   the folds do not. A log far larger than memory replays but the read model will not fit.
-- **Checkpoints are not written automatically.** `sentinel checkpoint` saves the read
-  model so later rebuilds resume instead of folding from record 1, but nothing calls
-  it for you — there is no policy that decides when one is due. Without a checkpoint,
-  rebuilding as of sequence *n* folds *n* records, ~1.25 s at 78k.
+- **Checkpoints are written at build time only.** `build` stores the read model it
+  just folded, and `sentinel checkpoint` writes one on demand, but nothing checkpoints
+  *periodically* — there is no policy deciding when the next one is due. So a log that
+  has grown a long way past its last checkpoint pays the fold for the tail, and one
+  with no checkpoint at all folds from record 1 (~1.25 s at 78k records).
 - **Single-machine only.** One SQLite file, one host. The concurrency guarantees are
   SQLite's, and they stop at the filesystem.
 
