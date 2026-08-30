@@ -8,6 +8,22 @@ from sklearn.metrics import average_precision_score, precision_recall_curve, roc
 
 from .features import FEATURES
 
+#: Fraction of the timeline used for fitting. The rest is held out, in time order,
+#: so the evaluation is a forecast rather than an interpolation.
+TRAIN_FRACTION = 0.7
+
+
+def temporal_split(feat: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split a feature frame chronologically into (train, test).
+
+    Exposed rather than kept inside ``train`` because the alerting threshold is tuned
+    on the same held-out rows, and two independently computed "last 30%" would be a
+    leak waiting to happen.
+    """
+    ordered = feat.sort_values("ts").reset_index(drop=True)
+    cut = int(len(ordered) * TRAIN_FRACTION)
+    return ordered.iloc[:cut], ordered.iloc[cut:]
+
 
 class FraudModels:
     def __init__(self, seed: int = 42, fp_cost: float = 12.0, fn_cost: float = 450.0):
@@ -20,10 +36,13 @@ class FraudModels:
         self.metrics: dict = {}
 
     def train(self, feat: pd.DataFrame) -> dict:
-        """Temporal split (first 70% train / last 30% test) — no future leakage."""
-        feat = feat.sort_values("ts").reset_index(drop=True)
-        cut = int(len(feat) * 0.7)
-        tr, te = feat.iloc[:cut], feat.iloc[cut:]
+        """Fit on the first 70% of the timeline and evaluate on the last 30%.
+
+        The threshold set here is a *model-only* operating point. It is not the one
+        the alert policy uses: see :mod:`sentinel.detection.tuning`, which tunes the
+        blended score the policy actually compares.
+        """
+        tr, te = temporal_split(feat)
         x_tr, y_tr = tr[FEATURES], tr["fraud"]
         x_te, y_te = te[FEATURES], te["fraud"]
 
@@ -42,7 +61,7 @@ class FraudModels:
         fn = int((~pred & (y_te == 1)).sum())
         self.metrics = {
             "auc": round(float(auc), 4), "avg_precision": round(float(ap), 4),
-            "threshold": round(float(self.threshold), 4),
+            "ml_threshold": round(float(self.threshold), 4),
             "precision": round(tp / (tp + fp), 3) if tp + fp else 0.0,
             "recall": round(tp / (tp + fn), 3) if tp + fn else 0.0,
             "train_rows": len(tr), "train_frauds": int(y_tr.sum()),

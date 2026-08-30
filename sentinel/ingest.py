@@ -24,10 +24,11 @@ from .commands.handlers import (
     ObserveTransactionHandler,
 )
 from .commands.messages import AdoptDetectionPolicy, DispositionCase, ObserveTransaction
-from .detection.ensemble import FraudModels
+from .detection.ensemble import FraudModels, temporal_split
 from .detection.features import FEATURES, build_feature_frame
 from .detection.risk_engine import RiskEngine
 from .detection.synthetic import generate_transactions
+from .detection.tuning import OperatingPoint, rule_scores, tune_alert_threshold
 from .domain.clock import SteppingClock
 from .domain.policy import (
     DEFAULT_RULE_WEIGHT,
@@ -93,7 +94,12 @@ def load_corpus(csv_path: str | Path | None, config: CorpusConfig) -> pd.DataFra
 
 
 def train_detector(
-    df: pd.DataFrame, *, seed: int = 42, costs: CostModel | None = None
+    df: pd.DataFrame,
+    *,
+    seed: int = 42,
+    costs: CostModel | None = None,
+    rule_weight: float = DEFAULT_RULE_WEIGHT,
+    rules_only_floor: float = DEFAULT_RULES_ONLY_FLOOR,
 ) -> tuple[FraudModels, dict[str, Any]]:
     """Fit the ensemble on a temporal split and cost-tune its threshold.
 
@@ -109,8 +115,36 @@ def train_detector(
     costs = costs or CostModel()
     feat = build_feature_frame(df)
     models = FraudModels(seed=seed, fp_cost=costs.fp_cost, fn_cost=costs.fn_cost)
-    metrics = models.train(feat)
+    metrics = dict(models.train(feat))
+    point = _tune_operating_point(models, feat, rule_weight, rules_only_floor, costs)
+    models.threshold = point.threshold
+    metrics.update(point.as_dict())
     return models, metrics
+
+
+def _tune_operating_point(
+    models: FraudModels,
+    feat: pd.DataFrame,
+    rule_weight: float,
+    rules_only_floor: float,
+    costs: CostModel,
+) -> OperatingPoint:
+    """Choose the cut on the blended score, on the same held-out rows.
+
+    Tuning on the model probability and then comparing the blend is how the recorded
+    policy ended up missing more than half of the labelled fraud it had scored
+    correctly: with ``rule_weight`` 0.35, a transaction no rule fired on can never
+    blend above 0.65, whatever the model said.
+    """
+    _, test = temporal_split(feat)
+    return tune_alert_threshold(
+        models.score(test),
+        rule_scores(test),
+        test["fraud"].to_numpy(),
+        rule_weight=rule_weight,
+        rules_only_floor=rules_only_floor,
+        costs=costs,
+    )
 
 
 def wire(
@@ -168,7 +202,10 @@ def build_event_log(
     """
     costs = costs or CostModel()
     if models is None:
-        models, metrics = train_detector(df, seed=seed, costs=costs)
+        models, metrics = train_detector(
+            df, seed=seed, costs=costs,
+            rule_weight=rule_weight, rules_only_floor=rules_only_floor,
+        )
     metrics = metrics or dict(models.metrics)
 
     policy = AlertPolicy(
