@@ -49,8 +49,8 @@ class RiskEngine:
         Semantically identical to calling :meth:`assess` in a loop — features are
         still extracted strictly one transaction at a time, in order — but the
         model is invoked once for the whole batch. A per-row ``predict_proba`` on
-        38k transactions costs minutes; one vectorised call costs seconds. The
-        test suite asserts the two paths agree exactly.
+        38k transactions costs minutes; one vectorised call costs seconds.
+        ``test_replay_identity`` asserts the two paths agree exactly.
         """
         if not txns:
             return []

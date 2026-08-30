@@ -114,8 +114,10 @@ def replay_variants(
         store: the log to replay.
         variants: policies to evaluate.
         verify_against_log: also check whether each variant's alert set is exactly
-            the ``AlertRaised`` set already on the log. Exactly one variant — the
-            recorded baseline — should come back ``True``.
+            the ``AlertRaised`` set already on the log. The recorded baseline must
+            come back ``True``; so will any variant whose edits happen to change no
+            decision on this corpus, which is a real finding about the variant and
+            not a bug in the comparison.
     """
     results = [VariantResult(v.label, v.describe()) for v in variants]
     labels: dict[int, int] = {}
