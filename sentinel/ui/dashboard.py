@@ -16,8 +16,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..commands.bus import CommandBus
-from ..errors import CommandRejected
 from ..commands.messages import DispositionCase
+from ..errors import CommandRejected
 from ..domain.events import Disposition
 from ..domain.policy import AlertPolicy, CostModel
 from ..projections.case_queue import CaseView
@@ -217,11 +217,22 @@ class Dashboard:
             self.state.status = f"rejected: {exc}"
             return
         self.state.dispositions += 1
-        self.state.caches.pop("counterfactual", None)
+        self._invalidate(case.case_id)
         self.state.status = (
             f"{case.case_id} -> {outcome.value} (event {self.store.last_seq} appended)"
         )
         self.state.cursor = min(self.state.cursor, max(0, len(self.queue()) - 1))
+
+    def _invalidate(self, case_id: str) -> None:
+        """Drop every cached view of a case whose facts just changed.
+
+        Only the counterfactual key was cleared here before, so pressing ``a`` right
+        after dispositioning showed a trail missing the CaseDispositioned event that
+        had just been appended — the one thing the analyst wanted to see.
+        """
+        self.state.caches.pop("counterfactual", None)
+        for key in ("trail", "travel"):
+            self.state.caches.get(key, {}).pop(case_id, None)
 
     # --------------------------------------------------------------- render
 

@@ -54,8 +54,13 @@ def _read_key_windows() -> str:  # pragma: no cover - needs a real console
     import msvcrt
 
     ch = msvcrt.getwch()
+    if not ch or ch == "\x04":
+        # A console whose input has gone away returns nothing. Spinning on that
+        # would peg a core; quitting is the only sane reading of "no more keys".
+        return "q"
     if ch in ("\x00", "\xe0"):
-        return _WIN_SPECIAL.get(msvcrt.getwch(), "")
+        special = msvcrt.getwch()
+        return _WIN_SPECIAL.get(special, "") if special else "q"
     if ch in ("\r", "\n"):
         return ENTER
     if ch == "\x1b":
