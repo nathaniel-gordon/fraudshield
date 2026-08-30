@@ -5,6 +5,12 @@ Fraud modes injected:
   travel       - impossible travel: distant location seconds apart
   takeover     - account takeover: odd-hour high-value online spend, new category
 Real deployments replace this with a transaction export (see README schema).
+
+``hour`` is derived from ``ts`` and never set independently. It used to be assigned
+per row and then overwritten wholesale by the derivation at the end, which silently
+threw away the takeover mode's odd-hour signature — the one thing that distinguishes
+it — so those rows only ever looked like ordinary large online purchases. A fraud
+mode whose defining feature is the time of day has to move the timestamp.
 """
 from __future__ import annotations
 
@@ -32,8 +38,6 @@ def generate_transactions(n_cards: int = 600, days: int = 45, seed: int = 42,
         times = np.sort(rng.uniform(0, days * 24 * 3600, n_txn))
         fav_cats = rng.choice(CATEGORIES, size=3, replace=False)
         for t in times:
-            hour = (t / 3600) % 24
-            wake = 8 + 14 * rng.beta(2, 2)
             cat = str(rng.choice(fav_cats) if rng.random() < 0.75 else rng.choice(CATEGORIES))
             spot = rng.choice(["home", "work", "mall"], p=[0.5, 0.3, 0.2])
             dlat, dlon = CITY_GRID[spot]
@@ -43,7 +47,6 @@ def generate_transactions(n_cards: int = 600, days: int = 45, seed: int = 42,
                 "category": cat,
                 "lat": home_lat + dlat + rng.normal(0, 0.05),
                 "lon": home_lon + dlon + rng.normal(0, 0.05),
-                "hour": hour if rng.random() < 0.9 else wake,
                 "is_online": int(rng.random() < 0.3),
                 "fraud": 0, "fraud_mode": "",
             })
@@ -72,14 +75,23 @@ def generate_transactions(n_cards: int = 600, days: int = 45, seed: int = 42,
                                        lat=anchor["lat"] + far[0], lon=anchor["lon"] + far[1],
                                        category="jewelry", fraud=1, fraud_mode=mode))
         else:  # takeover
+            # Land the spree in the small hours by moving the clock, not the column:
+            # odd_hour is int(hour < 6) and hour is derived from ts, so a hand-set
+            # hour would be discarded and the signature would never reach the model.
+            night = (start // 86400) * 86400 + float(rng.uniform(1.5, 3.0)) * 3600
+            if night <= start:
+                night += 86400
             for i in range(int(rng.integers(2, 5))):
-                fraud_rows.append(dict(anchor, txn_id=-1, ts=start + i * rng.uniform(900, 5400),
+                fraud_rows.append(dict(anchor, txn_id=-1,
+                                       ts=night + i * rng.uniform(600, 1800),
                                        amount=round(float(rng.uniform(250, 1200)), 2),
-                                       hour=float(rng.uniform(2, 5)), is_online=1,
+                                       is_online=1,
                                        category=str(rng.choice(["online_retail", "electronics"])),
                                        fraud=1, fraud_mode=mode))
     fraud_df = pd.DataFrame(fraud_rows)
     df = pd.concat([df, fraud_df], ignore_index=True).sort_values("ts").reset_index(drop=True)
     df["txn_id"] = range(len(df))
+    #: Single source of truth for the time of day. Every consumer — the odd_hour
+    #: feature, the odd_hour_online_high_value rule — reads this column.
     df["hour"] = (df["ts"] / 3600) % 24
     return df

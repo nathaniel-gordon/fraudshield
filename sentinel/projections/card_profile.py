@@ -48,7 +48,6 @@ class CardProfileProjection(Projection):
                 "genuine": 0,
                 "escalated": 0,
                 "amount_at_risk": 0.0,
-                "confirmed_loss_blocked": 0.0,
             },
         )
 
