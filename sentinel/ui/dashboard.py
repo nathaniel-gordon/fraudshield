@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..commands.bus import CommandBus
-from ..commands.handlers import CommandRejected
+from ..errors import CommandRejected
 from ..commands.messages import DispositionCase
 from ..domain.events import Disposition
 from ..domain.policy import AlertPolicy

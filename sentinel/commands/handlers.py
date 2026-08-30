@@ -5,12 +5,19 @@ the events it implies. It does not touch the store and it does not touch a proje
 The bus does the appending. That keeps handlers trivially unit-testable (feed a
 command, inspect the events) and makes it structurally impossible for a handler to
 mutate a read model behind the log's back.
+
+Validation lives here rather than at the storage layer because a rejection must
+happen *before* anything is written. Every refusal raises a subclass of
+:class:`sentinel.errors.CommandRejected` carrying a stable code, and nothing is
+appended when one is raised.
 """
 from __future__ import annotations
 
+import math
 from typing import Protocol, Sequence
 
 from ..detection.risk_engine import RiskEngine
+from ..errors import CaseAlreadyClosed, OutOfOrder, UnknownCase, ValidationFailed
 from ..domain.clock import Clock
 from ..domain.events import (
     AlertRaised,
@@ -30,12 +37,9 @@ from ..projections.case_queue import CaseQueueProjection
 from .messages import AdoptDetectionPolicy, DispositionCase, ObserveTransaction
 
 
-class CommandRejected(Exception):
-    """A command failed validation; nothing was appended to the log.
-
-    Rejections are not events. A refused instruction is a non-event, and writing
-    it would pollute the fact stream that projections fold.
-    """
+#: Bound on a single transaction. Anything larger is a units bug or a corrupt feed,
+#: not a purchase, and letting it through would drag every per-card average with it.
+MAX_AMOUNT = 1_000_000.0
 
 
 class Handler(Protocol):
@@ -49,10 +53,33 @@ class AdoptDetectionPolicyHandler:
     """Writes the log's self-describing header."""
 
     def handle(self, command: AdoptDetectionPolicy) -> list[DomainEvent]:
+        _finite("rule_weight", command.rule_weight)
+        _finite("alert_threshold", command.alert_threshold)
+        _finite("rules_only_floor", command.rules_only_floor)
         if not 0.0 <= command.rule_weight <= 1.0:
-            raise CommandRejected(f"rule_weight out of range: {command.rule_weight}")
-        if command.alert_threshold <= 0.0:
-            raise CommandRejected("alert_threshold must be positive")
+            raise ValidationFailed(
+                f"rule_weight out of range: {command.rule_weight}",
+                field="rule_weight",
+                value=command.rule_weight,
+            )
+        if not 0.0 < command.alert_threshold <= 1.0:
+            raise ValidationFailed(
+                "alert_threshold must be in (0, 1]",
+                field="alert_threshold",
+                value=command.alert_threshold,
+            )
+        if not 0.0 <= command.rules_only_floor <= 1.0:
+            raise ValidationFailed(
+                "rules_only_floor must be in [0, 1]",
+                field="rules_only_floor",
+                value=command.rules_only_floor,
+            )
+        if not command.model_id.strip():
+            raise ValidationFailed("policy must name the model it adopts", field="model_id")
+        if not command.features:
+            raise ValidationFailed(
+                "policy must list the features it was fitted on", field="features"
+            )
         return [
             DetectionPolicyAdopted(
                 model_id=command.model_id,
@@ -81,6 +108,63 @@ class ObserveTransactionHandler:
     def __init__(self, risk: RiskEngine, policy: AlertPolicy) -> None:
         self.risk = risk
         self.policy = policy
+        #: Newest ``occurred_at`` accepted so far. The feature stream is online and
+        #: assumes arrival order equals event order; an observation from before the
+        #: last one would silently corrupt every per-card window.
+        self._watermark = float("-inf")
+
+    def _validate(self, cmd: ObserveTransaction) -> None:
+        """Reject anything the log must never carry.
+
+        Finiteness first: ``json.dumps`` writes NaN and Infinity as bare literals that
+        are not valid JSON, so one NaN amount would poison the record format for every
+        reader that is not Python.
+        """
+        if not cmd.card_id.strip():
+            raise ValidationFailed(f"txn {cmd.txn_id}: missing card_id", txn_id=cmd.txn_id)
+        if cmd.txn_id < 0:
+            raise ValidationFailed(
+                f"txn_id must be non-negative, got {cmd.txn_id}", txn_id=cmd.txn_id
+            )
+        for name in ("amount", "occurred_at", "lat", "lon", "hour"):
+            _finite(name, getattr(cmd, name), txn_id=cmd.txn_id)
+        if cmd.amount < 0:
+            raise ValidationFailed(
+                f"txn {cmd.txn_id}: negative amount {cmd.amount}",
+                txn_id=cmd.txn_id, field="amount", value=cmd.amount,
+            )
+        if cmd.amount > MAX_AMOUNT:
+            raise ValidationFailed(
+                f"txn {cmd.txn_id}: amount {cmd.amount} exceeds the {MAX_AMOUNT:,.0f} ceiling",
+                txn_id=cmd.txn_id, field="amount", value=cmd.amount,
+            )
+        if not -90.0 <= cmd.lat <= 90.0:
+            raise ValidationFailed(
+                f"txn {cmd.txn_id}: latitude {cmd.lat} is off the globe",
+                txn_id=cmd.txn_id, field="lat", value=cmd.lat,
+            )
+        if not -180.0 <= cmd.lon <= 180.0:
+            raise ValidationFailed(
+                f"txn {cmd.txn_id}: longitude {cmd.lon} is off the globe",
+                txn_id=cmd.txn_id, field="lon", value=cmd.lon,
+            )
+        if not 0.0 <= cmd.hour < 24.0:
+            raise ValidationFailed(
+                f"txn {cmd.txn_id}: hour {cmd.hour} is not a time of day",
+                txn_id=cmd.txn_id, field="hour", value=cmd.hour,
+            )
+        if cmd.is_online not in (0, 1):
+            raise ValidationFailed(
+                f"txn {cmd.txn_id}: is_online must be 0 or 1, got {cmd.is_online}",
+                txn_id=cmd.txn_id, field="is_online", value=cmd.is_online,
+            )
+        if cmd.occurred_at < self._watermark:
+            raise OutOfOrder(
+                f"txn {cmd.txn_id} occurred at {cmd.occurred_at}, before the watermark "
+                f"{self._watermark}",
+                txn_id=cmd.txn_id, occurred_at=cmd.occurred_at, watermark=self._watermark,
+            )
+        self._watermark = cmd.occurred_at
 
     def handle(self, command: ObserveTransaction) -> list[DomainEvent]:
         return self.handle_batch([command])[0]
@@ -92,10 +176,7 @@ class ObserveTransactionHandler:
         at a time — but one model call per batch instead of one per transaction.
         """
         for cmd in commands:
-            if cmd.amount < 0:
-                raise CommandRejected(f"txn {cmd.txn_id}: negative amount {cmd.amount}")
-            if not cmd.card_id:
-                raise CommandRejected(f"txn {cmd.txn_id}: missing card_id")
+            self._validate(cmd)
         assessments = self.risk.assess_batch([c.as_txn() for c in commands])
         return [self._events_for(c, a) for c, a in zip(commands, assessments)]
 
@@ -191,14 +272,20 @@ class DispositionCaseHandler:
     def handle(self, command: DispositionCase) -> list[DomainEvent]:
         case = self.cases.get(command.case_id)
         if case is None:
-            raise CommandRejected(f"unknown case {command.case_id!r}")
+            raise UnknownCase(f"unknown case {command.case_id!r}", case_id=command.case_id)
         if not case.is_open:
-            raise CommandRejected(
-                f"case {command.case_id} was already dispositioned as {case.disposition!r}"
+            raise CaseAlreadyClosed(
+                f"case {command.case_id} was already dispositioned as {case.disposition!r}",
+                case_id=command.case_id, disposition=case.disposition,
             )
         if not command.analyst.strip():
-            raise CommandRejected("every disposition must name an analyst")
-        outcome = Disposition.parse(command.disposition)
+            raise ValidationFailed("every disposition must name an analyst", field="analyst")
+        try:
+            outcome = Disposition.parse(command.disposition)
+        except ValueError as exc:
+            raise ValidationFailed(
+                f"{command.disposition!r} is not a disposition", field="disposition"
+            ) from exc
         return [
             CaseDispositioned(
                 case_id=command.case_id,
@@ -208,3 +295,21 @@ class DispositionCaseHandler:
                 decided_at=self.clock.now(),
             )
         ]
+
+
+def _finite(name: str, value: float, *, txn_id: int | None = None) -> None:
+    """Reject NaN and infinity before they reach the codec."""
+    if not math.isfinite(float(value)):
+        raise ValidationFailed(
+            f"{name} must be a finite number, got {value!r}",
+            field=name, value=str(value), txn_id=txn_id,
+        )
+
+
+__all__ = [
+    "MAX_AMOUNT",
+    "AdoptDetectionPolicyHandler",
+    "DispositionCaseHandler",
+    "Handler",
+    "ObserveTransactionHandler",
+]
