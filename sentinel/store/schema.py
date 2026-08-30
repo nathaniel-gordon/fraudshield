@@ -17,6 +17,8 @@ live:
                                     ALERT-/CASE- identities can never collide
     processed_commands.command_id   command idempotency: the second submit of the same
                                     command cannot append a second copy
+    projection_checkpoints.seq      a checkpoint is one whole read model at one point,
+                                    never a loose collection of per-projection rows
 """
 from __future__ import annotations
 
@@ -88,6 +90,26 @@ MIGRATIONS: tuple[Migration, ...] = (
                 key_id       TEXT    NOT NULL,
                 mac          TEXT    NOT NULL,
                 sealed_at    REAL    NOT NULL
+            )
+            """,
+        ),
+    ),
+    Migration(
+        3,
+        "read-model checkpoints",
+        (
+            """
+            CREATE TABLE IF NOT EXISTS projection_checkpoints (
+                seq         INTEGER PRIMARY KEY,
+                chain_hash  TEXT    NOT NULL,
+                fingerprint TEXT    NOT NULL,
+                applied     INTEGER NOT NULL,
+                names       TEXT    NOT NULL,
+                state       TEXT    NOT NULL,
+                created_at  REAL    NOT NULL,
+                CHECK (seq > 0),
+                CHECK (applied >= 0),
+                CHECK (length(chain_hash) = 64 AND length(fingerprint) = 64)
             )
             """,
         ),

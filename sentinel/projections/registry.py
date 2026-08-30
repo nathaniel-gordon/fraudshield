@@ -41,6 +41,9 @@ class ReadModel:
         self._by_name = {p.name: p for p in self._projections}
         self.applied = 0
         self.upto_seq = 0
+        #: Sequence number a checkpoint started this fold at; 0 means from scratch.
+        #: Only ever an optimisation record — it never changes the resulting state.
+        self.resumed_from = 0
 
     # ------------------------------------------------------------------ folds
 

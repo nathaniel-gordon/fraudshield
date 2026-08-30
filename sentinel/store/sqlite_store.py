@@ -352,11 +352,14 @@ class EventStore:
 
     @property
     def connection(self) -> sqlite3.Connection:
-        """The underlying connection, for the sibling modules in this package.
+        """The underlying connection, for the two modules that own a sibling table.
 
-        Exposed for :mod:`sentinel.store.seal`, which owns the ``seals`` table in the
-        same schema. Nothing outside ``sentinel.store`` should reach for it: the log's
-        contract is the append/read/verify surface above.
+        :mod:`sentinel.store.seal` owns ``seals`` and
+        :mod:`sentinel.projections.checkpoints` owns ``projection_checkpoints``; both
+        live in this schema and neither holds events. Nothing else should reach for
+        this: the log's contract is the append/read/verify surface above, and the
+        dependency arrow still points inward — those modules import the store, never
+        the other way round.
         """
         return self._con
 

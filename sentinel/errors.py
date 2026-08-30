@@ -85,6 +85,17 @@ class SchemaTooNew(StoreError):
     code = "schema_too_new"
 
 
+class CheckpointUnusable(StoreError):
+    """A stored checkpoint cannot be trusted, so it was not used.
+
+    Never fatal on its own: a checkpoint is only ever an optimisation, and the log it
+    was taken from is still the ground truth. Callers that catch this fall back to a
+    full replay and get the same answer, slower.
+    """
+
+    code = "checkpoint_unusable"
+
+
 # ------------------------------------------------------------------ commands
 
 
@@ -155,6 +166,7 @@ __all__ = [
     "CaseAlreadyClosed",
     "CaseNotFound",
     "ChainBroken",
+    "CheckpointUnusable",
     "CommandRejected",
     "ConcurrencyConflict",
     "DuplicateTransaction",
