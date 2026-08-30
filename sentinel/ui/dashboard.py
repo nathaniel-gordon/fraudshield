@@ -19,7 +19,7 @@ from ..commands.bus import CommandBus
 from ..errors import CommandRejected
 from ..commands.messages import DispositionCase
 from ..domain.events import Disposition
-from ..domain.policy import AlertPolicy
+from ..domain.policy import AlertPolicy, CostModel
 from ..projections.case_queue import CaseView
 from ..projections.registry import ReadModel
 from ..query.audit import case_trail
@@ -106,6 +106,7 @@ class Dashboard:
         bus: CommandBus,
         policy: AlertPolicy,
         *,
+        costs: CostModel | None = None,
         width: int = 112,
         height: int = 30,
         palette: Palette | None = None,
@@ -115,6 +116,7 @@ class Dashboard:
         self.read_model = read_model
         self.bus = bus
         self.policy = policy
+        self.costs = costs or CostModel()
         self.width = width
         self.height = height
         self.palette = palette or Palette(False)
@@ -577,7 +579,7 @@ class Dashboard:
         rows = self.state.caches.get("counterfactual")
         if rows is None:
             results = replay_variants(self.store, standard_sweep(self.policy))
-            rows = sweep_rows(results, fp_cost=12.0, fn_cost=450.0)
+            rows = sweep_rows(results, self.costs)
             for row, result in zip(rows, results):
                 row["matches_log"] = result.matches_log
             self.state.caches["counterfactual"] = rows

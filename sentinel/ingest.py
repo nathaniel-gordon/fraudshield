@@ -28,7 +28,12 @@ from .detection.features import FEATURES, build_feature_frame
 from .detection.risk_engine import RiskEngine
 from .detection.synthetic import generate_transactions
 from .domain.clock import SteppingClock
-from .domain.policy import DEFAULT_RULE_WEIGHT, DEFAULT_RULES_ONLY_FLOOR, AlertPolicy
+from .domain.policy import (
+    DEFAULT_RULE_WEIGHT,
+    DEFAULT_RULES_ONLY_FLOOR,
+    AlertPolicy,
+    CostModel,
+)
 from .projections.registry import ReadModel
 from .store.sqlite_store import EventStore
 
@@ -87,42 +92,50 @@ def load_corpus(csv_path: str | Path | None, config: CorpusConfig) -> pd.DataFra
 
 
 def train_detector(
-    df: pd.DataFrame, *, seed: int = 42, fp_cost: float = 12.0, fn_cost: float = 450.0
+    df: pd.DataFrame, *, seed: int = 42, costs: CostModel | None = None
 ) -> tuple[FraudModels, dict[str, Any]]:
     """Fit the ensemble on a temporal split and cost-tune its threshold.
 
     Unchanged science from the pre-refactor detector: stream-safe features, first
     70% of the timeline to train, last 30% to evaluate, threshold chosen to minimise
-    ``fp_cost*FP + fn_cost*FN``.
+    the cost model's ``fp_cost*FP + fn_cost*FN``.
 
     Raises:
         ValueError: when the corpus carries no usable fraud labels to learn from.
     """
     if "fraud" not in df.columns or int((df["fraud"] == 1).sum()) < 5:
         raise ValueError("training needs a labelled corpus with at least 5 fraud rows")
+    costs = costs or CostModel()
     feat = build_feature_frame(df)
-    models = FraudModels(seed=seed, fp_cost=fp_cost, fn_cost=fn_cost)
+    models = FraudModels(seed=seed, fp_cost=costs.fp_cost, fn_cost=costs.fn_cost)
     metrics = models.train(feat)
     return models, metrics
 
 
 def wire(
     store: EventStore,
-    models: FraudModels,
+    models: FraudModels | None,
     policy: AlertPolicy,
     read_model: ReadModel | None = None,
     *,
     clock_start: float = 0.0,
 ) -> tuple[CommandBus, ReadModel]:
-    """Assemble the write side around an existing store and model.
+    """Assemble the write side around an existing store.
 
-    Kept separate from :func:`build_event_log` so the dashboard can attach a live
-    bus to a log it merely loaded, and dispose of cases without re-ingesting.
+    ``models`` may be ``None``. The analyst console only ever appends dispositions,
+    which need no detector, and refusing to load one keeps that whole path free of
+    scikit-learn — and of deserialising a pickle. A bus wired without a model simply
+    has no handler for :class:`ObserveTransaction`, so asking it to ingest fails
+    loudly rather than scoring with something stale.
+
+    Kept separate from :func:`build_event_log` so the dashboard can attach a live bus
+    to a log it merely loaded, and dispose of cases without re-ingesting.
     """
     rm = read_model if read_model is not None else ReadModel()
     bus = CommandBus(store, rm)
     bus.register(AdoptDetectionPolicy, AdoptDetectionPolicyHandler())
-    bus.register(ObserveTransaction, ObserveTransactionHandler(RiskEngine(models), policy))
+    if models is not None:
+        bus.register(ObserveTransaction, ObserveTransactionHandler(RiskEngine(models), policy))
     bus.register(DispositionCase, DispositionCaseHandler(rm.cases, SteppingClock(clock_start)))
     return bus, rm
 
@@ -132,8 +145,7 @@ def build_event_log(
     store: EventStore,
     *,
     seed: int = 42,
-    fp_cost: float = 12.0,
-    fn_cost: float = 450.0,
+    costs: CostModel | None = None,
     rule_weight: float = DEFAULT_RULE_WEIGHT,
     rules_only_floor: float = DEFAULT_RULES_ONLY_FLOOR,
     batch: int = DEFAULT_BATCH,
@@ -153,8 +165,9 @@ def build_event_log(
     Returns:
         The wiring plus the live read model, which by construction equals a replay.
     """
+    costs = costs or CostModel()
     if models is None:
-        models, metrics = train_detector(df, seed=seed, fp_cost=fp_cost, fn_cost=fn_cost)
+        models, metrics = train_detector(df, seed=seed, costs=costs)
     metrics = metrics or dict(models.metrics)
 
     policy = AlertPolicy(
@@ -171,8 +184,8 @@ def build_event_log(
             alert_threshold=policy.alert_threshold,
             rule_weight=policy.rule_weight,
             rules_only_floor=policy.rules_only_floor,
-            fp_cost=fp_cost,
-            fn_cost=fn_cost,
+            fp_cost=costs.fp_cost,
+            fn_cost=costs.fn_cost,
             auc=float(metrics.get("auc", 0.0)),
             avg_precision=float(metrics.get("avg_precision", 0.0)),
             train_rows=int(metrics.get("train_rows", 0)),

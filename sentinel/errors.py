@@ -30,11 +30,20 @@ class SentinelError(Exception):
         self.details: dict[str, Any] = details
 
     def as_dict(self) -> dict[str, Any]:
-        """JSON-safe form, used by the CLI's ``--json`` mode and by the logger."""
+        """JSON-safe form, used by the CLI's ``--json`` mode."""
         out: dict[str, Any] = {"error": self.code, "message": self.message}
         if self.details:
             out["details"] = self.details
         return out
+
+    def log_fields(self) -> dict[str, Any]:
+        """Same content under keys the stdlib logger allows on a record.
+
+        ``message`` and ``args`` are reserved on ``LogRecord``; passing either
+        through ``extra=`` raises rather than logging, which is a poor way to find
+        out about an error.
+        """
+        return {"error": self.code, "reason": self.message, "details": self.details}
 
 
 # ------------------------------------------------------------------- storage

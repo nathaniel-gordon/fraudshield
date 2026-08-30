@@ -1,9 +1,6 @@
 """Supervised + unsupervised model ensemble with cost-based threshold tuning."""
 from __future__ import annotations
 
-from pathlib import Path
-
-import joblib
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import GradientBoostingClassifier, IsolationForest
@@ -80,9 +77,8 @@ class FraudModels:
     def score(self, x: pd.DataFrame) -> np.ndarray:
         return self._blend(x[FEATURES])
 
-    def save(self, path: str | Path) -> None:
-        joblib.dump(self, Path(path))
-
-    @staticmethod
-    def load(path: str | Path) -> "FraudModels":
-        return joblib.load(Path(path))
+    # There is deliberately no save/load here. A fitted estimator can only be
+    # persisted as a pickle, and a pickle next to the log is an arbitrary-code
+    # payload that some later command would be tempted to load. Nothing needs it:
+    # the log records every score that was ever computed, so the whole read side —
+    # replay, audit, time travel, counterfactual — runs without scikit-learn.

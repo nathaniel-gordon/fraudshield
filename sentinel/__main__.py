@@ -11,7 +11,21 @@ subcommand maps to one thing the architecture makes possible:
     audit           print one case's ordered event trail
     counterfactual  re-decide the whole log under alternative policies
 
-Every command is offline and deterministic for a given seed.
+and one thing the *operations* of it needs:
+
+    info            what this log is: size, head, schema, record mix
+    cases           the queue as a table or as JSON, filtered and paged
+    case            one case with the ordered facts behind it
+    card            one card's profile and its case history
+    stats           daily volume, alert rate and outcomes
+    verify          walk the chain, and check the seal if there is one
+    seal            anchor the current head with an HMAC over a key you hold
+    export-jsonl    write the grep-able archive
+    import-jsonl    rebuild a log from an archive, re-checking every link
+
+Every command is offline and deterministic for a given seed. Anything that produces a
+list accepts ``--json``, so the operational commands compose with ``jq`` rather than
+only with a human.
 """
 from __future__ import annotations
 
@@ -20,31 +34,32 @@ import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 
-from .detection.ensemble import FraudModels
-from .domain.events import Disposition
-from .errors import InvalidPath
-from .domain.policy import AlertPolicy
+from . import paths
+from .domain.events import DetectionPolicyAdopted, Disposition
+from .domain.policy import DEFAULT_FN_COST, DEFAULT_FP_COST, AlertPolicy, CostModel
+from .errors import SentinelError
 from .ingest import BuiltLog, CorpusConfig, alert_quality, build_event_log, load_corpus, wire
+from .obs import configure_logging, correlation_scope, get_logger
 from .projections.registry import ReadModel
 from .query.audit import case_trail
 from .query.counterfactual import replay_variants, standard_sweep, sweep_rows
+from .query.operations import card_report, case_detail, list_cases, log_summary, stats
 from .query.timetravel import knowledge_at_case
-from . import paths
+from .store.jsonl import export_jsonl, import_jsonl
+from .store.seal import ENV_KEY, load_key, seal, seals, verify_seals
 from .store.sqlite_store import EventStore
 from .ui.ansi import Palette, configure_stdout, supports_color
 from .ui.dashboard import Dashboard
 from .ui.runner import DEMO_SCRIPT, run_live, run_scripted
 
+log = get_logger(__name__)
+
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "output"
-DETECTOR_PATH = OUT / "detector.joblib"
-
-#: Cost model used throughout the reports, matching the detector's threshold tuning.
-FP_COST, FN_COST = 12.0, 450.0
 
 
 @dataclass(slots=True)
@@ -67,8 +82,17 @@ class Ingested:
         return self.built.policy
 
 
+def _costs(args: argparse.Namespace) -> CostModel:
+    return CostModel(fp_cost=args.fp_cost, fn_cost=args.fn_cost)
+
+
 def _rule(title: str) -> None:
     print(f"\n{'=' * 100}\n{title}\n{'=' * 100}")
+
+
+def _emit(payload: dict[str, Any] | list[Any]) -> None:
+    """Machine-readable output on stdout. One document, so ``jq`` can read it."""
+    print(json.dumps(payload, indent=2, sort_keys=True, default=str))
 
 
 #: (key, width, format spec) for the counterfactual sweep table. Rates want four
@@ -81,17 +105,41 @@ SWEEP_COLUMNS: list[tuple[str, int, str]] = [
     ("fn", 5, ",d"),
     ("precision", 9, ".4f"),
     ("recall", 8, ".4f"),
+    ("f1", 7, ".4f"),
     ("cost", 12, ",.0f"),
+]
+
+CASE_COLUMNS: list[tuple[str, int, str]] = [
+    ("case_id", 15, ""),
+    ("card_id", 8, ""),
+    ("priority", 9, ".4f"),
+    ("amount", 10, ",.2f"),
+    ("trigger", 11, ""),
+    ("disposition", 16, ""),
+    ("headline", 42, ""),
+]
+
+DAY_COLUMNS: list[tuple[str, int, str]] = [
+    ("day", 5, ",d"),
+    ("txns", 8, ",d"),
+    ("amount", 13, ",.0f"),
+    ("alerts", 7, ",d"),
+    ("alert_rate", 11, ".4f"),
+    ("amount_at_risk", 15, ",.0f"),
+    ("cases_opened", 13, ",d"),
+    ("confirmed_fraud", 16, ",d"),
+    ("loss_avoided", 13, ",.0f"),
 ]
 
 
 def _table(rows: list[dict[str, Any]], spec: list[tuple[str, int, str]]) -> None:
     print("  " + "  ".join(key.upper().ljust(width) for key, width, _ in spec))
     for row in rows:
-        cells = [
-            format(row[key], fmt).ljust(width)[:width] if fmt else str(row[key]).ljust(width)[:width]
-            for key, width, fmt in spec
-        ]
+        cells = []
+        for key, width, fmt in spec:
+            value = row.get(key)
+            text = format(value, fmt) if fmt and value is not None else str(value or "")
+            cells.append(text.ljust(width)[:width])
         print("  " + "  ".join(cells))
 
 
@@ -114,22 +162,16 @@ def ingest(args: argparse.Namespace, *, quiet: bool = False) -> Ingested:
             print(f"\r  ingesting … {done:,}/{len(df):,} transactions -> {events:,} events",
                   end="", flush=True)
 
-    built = build_event_log(df, store, seed=args.seed, fp_cost=FP_COST, fn_cost=FN_COST,
-                            progress=progress)
-    _save_detector(built)
+    costs = _costs(args)
+    built = build_event_log(df, store, seed=args.seed, costs=costs, progress=progress)
+    # The fitted model is deliberately *not* written to disk. Nothing reads it back —
+    # the log carries every score that was ever computed — and a joblib file next to
+    # the log is a pickle that some later command would be tempted to load.
     if not quiet:
         print()
         print(f"  model: {built.model_metrics}")
         print(f"  log:   {built.events_written:,} events -> {store.path}")
     return Ingested(built=built, corpus=df)
-
-
-def _save_detector(built: BuiltLog) -> None:
-    """Persist the fitted ensemble next to the log."""
-    from .commands.messages import ObserveTransaction
-
-    handler = built.bus.handler_for(ObserveTransaction)
-    handler.risk.models.save(DETECTOR_PATH)  # type: ignore[attr-defined]
 
 
 def cmd_build(args: argparse.Namespace) -> int:
@@ -147,15 +189,13 @@ def _open_existing(log_path: str) -> tuple[EventStore, ReadModel, AlertPolicy]:
     """Attach to a log written by an earlier run, rebuilding the read model by replay.
 
     Note what is *not* loaded here: the model file. The log carries every score that
-    was ever computed, so the whole query side runs without scikit-learn.
+    was ever computed, so the whole query side runs without scikit-learn — and, more
+    to the point, without deserialising a pickle.
     """
-    try:
-        path = paths.input_file(log_path)
-    except InvalidPath as exc:
-        raise SystemExit(f"{exc.message}: {log_path} — run `python -m sentinel build` first") from exc
+    path = paths.input_file(log_path)
     store = EventStore(path)
-    header = next(store.read(upto_seq=1), None)
-    if header is None or header.type != "DetectionPolicyAdopted":
+    header = store.header()
+    if header is None or not isinstance(header.event, DetectionPolicyAdopted):
         store.close()
         raise SystemExit("log has no DetectionPolicyAdopted header; it was not built by this tool")
     policy = AlertPolicy(
@@ -167,13 +207,11 @@ def _open_existing(log_path: str) -> tuple[EventStore, ReadModel, AlertPolicy]:
 
 
 def cmd_dashboard(args: argparse.Namespace) -> int:
+    """Open the console. Dispositions are the only thing it writes, and they need no model."""
     store, read_model, policy = _open_existing(args.log)
-    if not DETECTOR_PATH.exists():
-        store.close()
-        raise SystemExit(f"dashboard needs {DETECTOR_PATH} — run `python -m sentinel build` first")
     last_ts = max((c.opened_at for c in read_model.cases.all_cases()), default=0.0)
-    bus, _ = wire(store, FraudModels.load(DETECTOR_PATH), policy, read_model, clock_start=last_ts)
-    dashboard = Dashboard(store, read_model, bus, policy,
+    bus, _ = wire(store, None, policy, read_model, clock_start=last_ts)
+    dashboard = Dashboard(store, read_model, bus, policy, costs=_costs(args),
                           width=args.width, height=args.height, analyst=args.analyst)
     try:
         recorded = run_live(dashboard)
@@ -189,37 +227,247 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
 def cmd_replay(args: argparse.Namespace) -> int:
     _rule("REPLAY — rebuild every projection from the log alone")
     store = EventStore(paths.input_file(args.log))
-    verified = store.verify()
-    first, second = ReadModel.rebuild(store), ReadModel.rebuild(store)
-    print(f"  hash chain verified over {verified:,} records; head {store.head_hash[:16]}")
-    print(f"  rebuilt twice, fingerprints identical: {first.fingerprint() == second.fingerprint()}")
-    for name, digest in first.fingerprints().items():
-        print(f"    {name:<18} {digest}")
-    store.close()
+    try:
+        verified = store.verify()
+        first, second = ReadModel.rebuild(store), ReadModel.rebuild(store)
+        if args.json:
+            _emit({
+                "records_verified": verified,
+                "head_hash": store.head_hash,
+                "stable_across_rebuilds": first.fingerprint() == second.fingerprint(),
+                "fingerprints": first.fingerprints(),
+            })
+            return 0
+        print(f"  hash chain verified over {verified:,} records; head {store.head_hash[:16]}")
+        print(f"  rebuilt twice, fingerprints identical: "
+              f"{first.fingerprint() == second.fingerprint()}")
+        for name, digest in first.fingerprints().items():
+            print(f"    {name:<18} {digest}")
+    finally:
+        store.close()
     return 0
 
 
 def cmd_audit(args: argparse.Namespace) -> int:
-    _rule(f"AUDIT TRAIL — {args.case}")
     store = EventStore(paths.input_file(args.log))
-    trail = case_trail(store, args.case)
-    store.close()
-    if not trail:
-        raise SystemExit(f"case {args.case} is not present in {args.log}")
-    for entry in trail:
-        print(f"  {entry.seq:>8,}  {entry.type:<22} {entry.hash[:12]}  {entry.detail}")
+    try:
+        trail = case_trail(store, args.case)
+        if not trail:
+            raise SystemExit(f"case {args.case} is not present in {args.log}")
+        if args.json:
+            _emit([entry.as_dict() for entry in trail])
+            return 0
+        _rule(f"AUDIT TRAIL — {args.case}")
+        for entry in trail:
+            print(f"  {entry.seq:>8,}  {entry.type:<22} {entry.hash[:12]}  {entry.detail}")
+    finally:
+        store.close()
     return 0
 
 
 def cmd_counterfactual(args: argparse.Namespace) -> int:
-    _rule("COUNTERFACTUAL — re-decide the whole log under alternative policies")
     store, _, policy = _open_existing(args.log)
-    results = replay_variants(store, standard_sweep(policy))
-    rows = sweep_rows(results, fp_cost=FP_COST, fn_cost=FN_COST)
-    _table(rows, SWEEP_COLUMNS)
-    exact = [r.label for r in results if r.matches_log]
-    print(f"\n  reproduces the recorded alert set exactly: {', '.join(exact) or 'none'}")
-    store.close()
+    try:
+        results = replay_variants(store, standard_sweep(policy))
+        rows = sweep_rows(results, _costs(args))
+        exact = [r.label for r in results if r.matches_log]
+        if args.json:
+            _emit({"costs": _costs(args).as_dict(), "variants": rows, "reproduce_log": exact})
+            return 0
+        _rule("COUNTERFACTUAL — re-decide the whole log under alternative policies")
+        _table(rows, SWEEP_COLUMNS)
+        print(f"\n  reproduces the recorded alert set exactly: {', '.join(exact) or 'none'}")
+    finally:
+        store.close()
+    return 0
+
+
+# ------------------------------------------------------------------ analyst
+
+
+def cmd_info(args: argparse.Namespace) -> int:
+    store = EventStore(paths.input_file(args.log))
+    try:
+        summary = log_summary(store)
+        summary["seals"] = [entry.as_dict() for entry in seals(store)]
+        if args.json:
+            _emit(summary)
+            return 0
+        _rule(f"LOG — {summary['path']}")
+        print(f"  records          {summary['records']:,}")
+        print(f"  head hash        {summary['head_hash']}")
+        print(f"  schema version   {summary['schema_version']}")
+        print(f"  commands applied {summary['commands_applied']:,}")
+        print(f"  seals            {len(summary['seals'])}")
+        print("  record mix:")
+        for type_name, count in sorted(summary["type_counts"].items()):
+            print(f"    {type_name:<24} {count:>10,}")
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_cases(args: argparse.Namespace) -> int:
+    store, read_model, _ = _open_existing(args.log)
+    try:
+        page = list_cases(
+            read_model,
+            status=args.status,
+            card_id=args.card or "",
+            min_priority=args.min_priority,
+            offset=args.offset,
+            limit=args.limit,
+        )
+        if args.json:
+            _emit(page.as_dict())
+            return 0
+        _rule(f"CASES — {args.status}, showing {len(page.items)} of {page.total:,}")
+        _table(page.items, CASE_COLUMNS)
+        if page.next_offset is not None:
+            print(f"\n  more: --offset {page.next_offset}")
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_case(args: argparse.Namespace) -> int:
+    store, read_model, _ = _open_existing(args.log)
+    try:
+        detail = case_detail(store, read_model, args.case)
+        if args.json:
+            _emit(detail)
+            return 0
+        case = detail["case"]
+        _rule(f"CASE — {case['case_id']}")
+        for key in ("card_id", "txn_id", "priority", "amount", "trigger", "disposition",
+                    "analyst", "headline"):
+            print(f"  {key:<14} {case[key]}")
+        for reason in case["reasons"] or ["(model-only alert — no rule fired)"]:
+            print(f"    reason: {reason}")
+        print("\n  trail:")
+        for entry in detail["trail"]:
+            print(f"    {entry['seq']:>8,}  {entry['type']:<22} {entry['hash']}  {entry['detail']}")
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_card(args: argparse.Namespace) -> int:
+    store, read_model, _ = _open_existing(args.log)
+    try:
+        report = card_report(store, read_model, args.card, offset=args.offset, limit=args.limit)
+        if args.json:
+            _emit(report)
+            return 0
+        _rule(f"CARD — {report['card_id']}")
+        for key, value in sorted(report["profile"].items()):
+            print(f"  {key:<18} {value}")
+        print(f"  stream version     {report['stream_version']}")
+        cases = report["cases"]
+        print(f"\n  cases ({len(cases['items'])} of {cases['total']:,}):")
+        _table(cases["items"], CASE_COLUMNS)
+        if cases["next_offset"] is not None:
+            print(f"\n  more: --offset {cases['next_offset']}")
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_stats(args: argparse.Namespace) -> int:
+    store, read_model, _ = _open_existing(args.log)
+    try:
+        report = stats(read_model, since_day=args.since_day)
+        if args.json:
+            _emit(report)
+            return 0
+        _rule("STATS — folded from the log")
+        for key, value in report["totals"].items():
+            print(f"  {key:<18} {value}")
+        print(f"\n  queue: {report['queue']['open']:,} open, {report['queue']['closed']:,} closed, "
+              f"outcomes {report['queue']['outcomes']}")
+        print()
+        _table(report["days"], DAY_COLUMNS)
+    finally:
+        store.close()
+    return 0
+
+
+# ------------------------------------------------------------------ evidence
+
+
+def cmd_verify(args: argparse.Namespace) -> int:
+    store = EventStore(paths.input_file(args.log))
+    try:
+        verified = store.verify()
+        result: dict[str, Any] = {
+            "records_verified": verified,
+            "head_hash": store.head_hash,
+            "chain": "ok",
+        }
+        if args.key or args.require_seal or seals(store):
+            check = verify_seals(store, load_key(args.key), require=args.require_seal)
+            result["seal"] = check.as_dict()
+        if args.json:
+            _emit(result)
+            return 0
+        _rule(f"VERIFY — {store.path}")
+        print(f"  chain: {verified:,} records verified, head {store.head_hash}")
+        if "seal" in result:
+            print(f"  seal:  {result['seal']['detail']}")
+        else:
+            print(f"  seal:  none — run `seal` with {ENV_KEY} set to anchor this head")
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_seal(args: argparse.Namespace) -> int:
+    store = EventStore(paths.input_file(args.log))
+    try:
+        entry = seal(store, load_key(args.key))
+        if args.json:
+            _emit(entry.as_dict())
+            return 0
+        _rule(f"SEAL — {store.path}")
+        print(f"  sealed records 1..{entry.seq:,} ({entry.record_count:,} records)")
+        print(f"  head {entry.head_hash}")
+        print(f"  mac  {entry.mac}  (key {entry.key_id})")
+        print("\n  Keep this receipt somewhere the log's writer cannot reach it.")
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    store = EventStore(paths.input_file(args.log))
+    try:
+        target = paths.output_file(args.to)
+        written = export_jsonl(store, target)
+        payload = {"exported": written, "path": str(target), "head_hash": store.head_hash}
+        if args.json:
+            _emit(payload)
+        else:
+            print(f"  exported {written:,} records -> {target}")
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_import(args: argparse.Namespace) -> int:
+    source = paths.input_file(getattr(args, "from"))
+    store = EventStore.create_fresh(paths.output_file(args.log))
+    try:
+        report = import_jsonl(source, store, recover=args.recover)
+        payload = report.as_dict() | {"path": str(store.path)}
+        if args.json:
+            _emit(payload)
+        else:
+            print(f"  imported {report.imported:,} records -> {store.path}")
+            print(f"  head {report.head_hash}")
+            if report.skipped_tail_bytes:
+                print(f"  dropped {report.skipped_tail_bytes:,} bytes of torn tail")
+    finally:
+        store.close()
     return 0
 
 
@@ -228,6 +476,7 @@ def cmd_counterfactual(args: argparse.Namespace) -> int:
 
 def cmd_demo(args: argparse.Namespace) -> int:
     """End-to-end tour that terminates on its own."""
+    costs = _costs(args)
     _rule("1/6  BUILD — command side: every decision becomes an immutable event")
     session = ingest(args)
     store, read_model, policy = session.store, session.read_model, session.policy
@@ -236,7 +485,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
           f"recall {quality['recall']} — {quality['tp']} TP / {quality['fp']} FP / {quality['fn']} FN")
 
     _rule("2/6  TUI — scripted analyst session (the same dashboard the live mode drives)")
-    dashboard = Dashboard(store, read_model, session.built.bus, policy,
+    dashboard = Dashboard(store, read_model, session.built.bus, policy, costs=costs,
                           width=args.width, height=args.height,
                           palette=Palette(supports_color(sys.stdout)), analyst="a.okafor")
     frames = run_scripted(dashboard, DEMO_SCRIPT, out=sys.stdout, show_frames=args.frames)
@@ -274,13 +523,14 @@ def cmd_demo(args: argparse.Namespace) -> int:
 
     _rule("6/6  COUNTERFACTUAL — alternative policies scored against the same log")
     results = replay_variants(store, standard_sweep(policy))
-    rows = sweep_rows(results, fp_cost=FP_COST, fn_cost=FN_COST)
+    rows = sweep_rows(results, costs)
     _table(rows, SWEEP_COLUMNS)
     exact = [r.label for r in results if r.matches_log]
     print(f"\n  reproduces the recorded alert set exactly: {', '.join(exact) or 'none'}")
     cheapest = min(rows, key=lambda r: r["cost"])
-    print(f"  cheapest at ${FP_COST:.0f}/FP and ${FN_COST:.0f}/FN: {cheapest['variant']} "
-          f"(${cheapest['cost']:,.0f} vs ${rows[0]['cost']:,.0f} for the recorded policy)")
+    print(f"  cheapest at ${costs.fp_cost:.0f}/FP and ${costs.fn_cost:.0f}/FN: "
+          f"{cheapest['variant']} (${cheapest['cost']:,.0f} vs ${rows[0]['cost']:,.0f} "
+          f"for the recorded policy)")
 
     _write_artifacts(store, read_model, policy, session.built.model_metrics, quality, rows, target)
     store.close()
@@ -309,6 +559,9 @@ def _write_artifacts(store: EventStore, read_model: ReadModel, policy: AlertPoli
         f"- policy in force: threshold {policy.alert_threshold:.3f}, rule weight "
         f"{policy.rule_weight:.2f}, rules-only floor {policy.rules_only_floor:.2f}",
         "",
+        "The corpus is synthetic. These numbers describe the generator as much as the",
+        "detector; see the Limitations section of the README.",
+        "",
         "## Read-model fingerprints (rebuilt purely by replay)",
         "",
     ]
@@ -322,15 +575,17 @@ def _write_artifacts(store: EventStore, read_model: ReadModel, policy: AlertPoli
             f"{row['label_precision']:.4f} | {row['closed']} | {row['analyst_precision']:.4f} |"
         )
     lines += ["", "## Counterfactual policy replay", "",
-              "| variant | alerts | tp | fp | fn | precision | recall | cost $ |",
-              "|---|---:|---:|---:|---:|---:|---:|---:|"]
+              "| variant | alerts | tp | fp | fn | precision | recall | f1 | cost $ |",
+              "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for row in sweep:
         lines.append(
             f"| {row['variant']} | {row['alerts']:,} | {row['tp']:,} | {row['fp']:,} | "
-            f"{row['fn']:,} | {row['precision']:.4f} | {row['recall']:.4f} | {row['cost']:,.0f} |"
+            f"{row['fn']:,} | {row['precision']:.4f} | {row['recall']:.4f} | {row['f1']:.4f} | "
+            f"{row['cost']:,.0f} |"
         )
     lines += ["", f"## Audit trail — {case_id}", "", "```"]
-    lines += [f"{e.seq:>8}  {e.type:<22} {e.hash[:12]}  {e.detail}" for e in case_trail(store, case_id)]
+    lines += [f"{e.seq:>8}  {e.type:<22} {e.hash[:12]}  {e.detail}"
+              for e in case_trail(store, case_id)]
     lines += ["```", ""]
     (OUT / "run_report.md").write_text("\n".join(lines), encoding="utf-8")
 
@@ -345,6 +600,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--width", type=int, default=112, help="console width in columns")
     p.add_argument("--height", type=int, default=30, help="console height in rows")
+    p.add_argument("--json", action="store_true", help="emit machine-readable output")
+    p.add_argument("--log-level", default=None,
+                   help="structured-log level on stderr (DEBUG/INFO/WARNING/ERROR)")
+    p.add_argument("--fp-cost", type=float, default=DEFAULT_FP_COST,
+                   help="dollars of analyst time per false alert")
+    p.add_argument("--fn-cost", type=float, default=DEFAULT_FN_COST,
+                   help="dollars lost per missed fraud")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     for name, help_text in (("build", "ingest a corpus into a fresh event log"),
@@ -365,7 +627,64 @@ def build_parser() -> argparse.ArgumentParser:
     a = sub.add_parser("audit", help="print one case's ordered event trail")
     a.add_argument("--case", required=True)
     sub.add_parser("counterfactual", help="re-decide the log under alternative policies")
+    sub.add_parser("info", help="what this log is: size, head, schema, record mix")
+
+    c = sub.add_parser("cases", help="the case queue, filtered and paged")
+    c.add_argument("--status", default="open", choices=("open", "closed", "all"))
+    c.add_argument("--card", default=None, help="restrict to one card")
+    c.add_argument("--min-priority", type=float, default=0.0)
+    _paging(c)
+
+    one = sub.add_parser("case", help="one case with the facts behind it")
+    one.add_argument("--case", required=True)
+
+    card = sub.add_parser("card", help="one card's profile and case history")
+    card.add_argument("--card", required=True)
+    _paging(card)
+
+    st = sub.add_parser("stats", help="daily volume, alert rate and outcomes")
+    st.add_argument("--since-day", type=int, default=None)
+
+    v = sub.add_parser("verify", help="walk the chain and check any seal")
+    v.add_argument("--key", default=None, help=f"sealing key; defaults to ${ENV_KEY}")
+    v.add_argument("--require-seal", action="store_true",
+                   help="fail when the log carries no seal at all")
+
+    sl = sub.add_parser("seal", help="anchor the current head with an HMAC")
+    sl.add_argument("--key", default=None, help=f"sealing key; defaults to ${ENV_KEY}")
+
+    ex = sub.add_parser("export-jsonl", help="write the grep-able archive")
+    ex.add_argument("--to", required=True)
+
+    im = sub.add_parser("import-jsonl", help="rebuild a log from an archive")
+    im.add_argument("--from", required=True, dest="from")
+    im.add_argument("--recover", action="store_true",
+                    help="drop an incomplete final line instead of failing")
     return p
+
+
+def _paging(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument("--offset", type=int, default=0)
+
+
+COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
+    "build": cmd_build,
+    "demo": cmd_demo,
+    "dashboard": cmd_dashboard,
+    "replay": cmd_replay,
+    "audit": cmd_audit,
+    "counterfactual": cmd_counterfactual,
+    "info": cmd_info,
+    "cases": cmd_cases,
+    "case": cmd_case,
+    "card": cmd_card,
+    "stats": cmd_stats,
+    "verify": cmd_verify,
+    "seal": cmd_seal,
+    "export-jsonl": cmd_export,
+    "import-jsonl": cmd_import,
+}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -373,14 +692,18 @@ def main(argv: list[str] | None = None) -> int:
     # box-drawing glyphs, and the console must never be able to kill the process.
     configure_stdout()
     args = build_parser().parse_args(argv)
-    return {
-        "build": cmd_build,
-        "demo": cmd_demo,
-        "dashboard": cmd_dashboard,
-        "replay": cmd_replay,
-        "audit": cmd_audit,
-        "counterfactual": cmd_counterfactual,
-    }[args.cmd](args)
+    configure_logging(args.log_level)
+    with correlation_scope() as cid:
+        log.info("command_started", extra={"command": args.cmd})
+        try:
+            return COMMANDS[args.cmd](args)
+        except SentinelError as exc:
+            log.error("command_failed", extra={"command": args.cmd, **exc.log_fields()})
+            if args.json:
+                print(json.dumps(exc.as_dict() | {"correlation_id": cid}, sort_keys=True))
+            else:
+                print(f"error [{exc.code}]: {exc.message}", file=sys.stderr)
+            return 2
 
 
 if __name__ == "__main__":

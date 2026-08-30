@@ -19,7 +19,7 @@ from .events import (
     alert_id_for,
     case_id_for,
 )
-from .policy import AlertPolicy, rule_score_from
+from .policy import AlertPolicy, CostModel, rule_score_from
 
 __all__ = [
     "EVENT_TYPES",
@@ -28,6 +28,7 @@ __all__ = [
     "CaseDispositioned",
     "CaseOpened",
     "Clock",
+    "CostModel",
     "DetectionPolicyAdopted",
     "Disposition",
     "DomainEvent",

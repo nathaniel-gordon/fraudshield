@@ -3,8 +3,13 @@
 This is the hinge of the whole design. The *write side* uses it to decide whether a
 scored transaction becomes an alert; the *counterfactual replayer* uses the very same
 object to re-decide historical scores under different settings. Because both paths
-share one implementation, a counterfactual configured with the recorded policy is
-guaranteed to reproduce the recorded alerts exactly — which the test suite asserts.
+share one implementation, a counterfactual configured with the recorded policy
+reproduces the recorded alerts exactly.
+
+:class:`CostModel` lives here for the same reason. The cost of a false positive and of
+a false negative decide the model's threshold, the sweep table, and the dashboard's
+verdict on which policy is cheapest; they used to be written out as literals in four
+places, which is three too many for numbers an operator is meant to be able to change.
 """
 from __future__ import annotations
 
@@ -13,8 +18,32 @@ from typing import Mapping
 
 #: Below this the blended score is not interesting; above it a case is opened.
 DEFAULT_RULE_WEIGHT = 0.35
+#: Analyst time to clear one false alert, in dollars.
+DEFAULT_FP_COST = 12.0
+#: Average loss of one missed fraudulent transaction, in dollars.
+DEFAULT_FN_COST = 450.0
 #: A rules-only fast path: catastrophic patterns alert even when the model is unsure.
 DEFAULT_RULES_ONLY_FLOOR = 0.85
+
+
+@dataclass(frozen=True, slots=True)
+class CostModel:
+    """What a mistake costs, in dollars, in each direction.
+
+    These are operating assumptions, not measurements: the defaults are the ones the
+    detector's threshold was tuned against, and an operator with real numbers should
+    pass their own via ``--fp-cost`` / ``--fn-cost``.
+    """
+
+    fp_cost: float = DEFAULT_FP_COST
+    fn_cost: float = DEFAULT_FN_COST
+
+    def expected(self, false_positives: int, false_negatives: int) -> float:
+        """Total cost of a confusion outcome."""
+        return self.fp_cost * false_positives + self.fn_cost * false_negatives
+
+    def as_dict(self) -> dict[str, float]:
+        return {"fp_cost": self.fp_cost, "fn_cost": self.fn_cost}
 
 
 @dataclass(frozen=True, slots=True)
