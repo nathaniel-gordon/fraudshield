@@ -7,6 +7,7 @@ only fair basis on which to judge the decision.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from ..domain.events import (
@@ -124,3 +125,25 @@ class CardProfileProjection(Projection):
 
     def snapshot(self) -> dict[str, Any]:
         return {cid: self._render(raw) for cid, raw in sorted(self._cards.items())}
+
+    # ------------------------------------------------------------ checkpoints
+
+    def checkpoint(self) -> dict[str, Any]:
+        # Unrendered on purpose: _render rounds money, and a restored fold must keep
+        # adding to the full-precision running total, not to a rounded one.
+        return {
+            "cards": {
+                cid: {**raw, "categories": sorted(raw["categories"])}
+                for cid, raw in sorted(self._cards.items())
+            },
+            "case_card": dict(sorted(self._case_card.items())),
+        }
+
+    def restore(self, state: Mapping[str, Any]) -> None:
+        self._cards = {}
+        for card_id, raw in state.get("cards", {}).items():
+            card = dict(raw)
+            card["categories"] = set(card.get("categories", ()))
+            card["rule_fires"] = dict(card.get("rule_fires", {}))
+            self._cards[card_id] = card
+        self._case_card = dict(state.get("case_card", {}))

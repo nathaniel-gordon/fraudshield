@@ -6,6 +6,7 @@ did. That is the difference between a metric and a coincidence.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from ..domain.events import (
@@ -130,3 +131,27 @@ class DailyMetricsProjection(Projection):
 
     def snapshot(self) -> dict[str, Any]:
         return {"rows": self.rows(), "totals": self.totals()}
+
+    # ------------------------------------------------------------ checkpoints
+
+    def checkpoint(self) -> dict[str, Any]:
+        return {
+            # Day indexes are ints; JSON object keys are not. Stringified here and
+            # parsed back in restore, which is why both directions live together.
+            "days": {str(index): dict(raw) for index, raw in sorted(self._days.items())},
+            "case_day": {
+                case_id: [index, amount]
+                for case_id, (index, amount) in sorted(self._case_day.items())
+            },
+            "labelled_fraud": self._labelled_fraud,
+            "labelled_total": self._labelled_total,
+        }
+
+    def restore(self, state: Mapping[str, Any]) -> None:
+        self._days = {int(key): dict(raw) for key, raw in state.get("days", {}).items()}
+        self._case_day = {
+            case_id: (int(pair[0]), float(pair[1]))
+            for case_id, pair in state.get("case_day", {}).items()
+        }
+        self._labelled_fraud = int(state.get("labelled_fraud", 0))
+        self._labelled_total = int(state.get("labelled_total", 0))

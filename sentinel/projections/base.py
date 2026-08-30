@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from typing import Any
 
 from ..store.codec import Recorded, canonical_json
@@ -31,11 +32,37 @@ class Projection(ABC):
 
     @abstractmethod
     def snapshot(self) -> dict[str, Any]:
-        """Return the projection's full state as plain, JSON-safe data.
+        """Return the projection's reportable state as plain, JSON-safe data.
 
         Must be deterministic and order-stable: collections are sorted, floats are
         rounded at fixed precision. The replay-identity tests compare snapshots
         byte for byte, so any incidental ordering here would show up as a failure.
+
+        This is a *view*, and it is deliberately lossy — money is rounded to cents,
+        rates to six places, and the buffers a fold needs mid-stream are left out.
+        Use :meth:`checkpoint` when the state has to be reloaded rather than read.
+        """
+
+    @abstractmethod
+    def checkpoint(self) -> dict[str, Any]:
+        """Return the projection's *complete* internal state, JSON-safe.
+
+        The contract is exact round-tripping: restoring this into a fresh instance
+        and folding the remaining events must land on the same state as folding the
+        whole log from zero. That is stronger than :meth:`snapshot` guarantees, and
+        it is why the two are separate methods — restoring from a rounded, partial
+        view would quietly bend every number downstream of it.
+
+        JSON object keys are strings, so integer-keyed maps are stringified here and
+        parsed back in :meth:`restore`.
+        """
+
+    @abstractmethod
+    def restore(self, state: Mapping[str, Any]) -> None:
+        """Replace all internal state with one previously returned by ``checkpoint``.
+
+        Must fully overwrite: a projection that merges instead of replacing would
+        double-count whatever it already held.
         """
 
     def fingerprint(self) -> str:

@@ -10,7 +10,7 @@ it forbids the write side from mutating one.
 """
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -76,6 +76,55 @@ class CaseView:
             "decided_at": self.decided_at,
             "decided_seq": self.decided_seq,
         }
+
+    def to_state(self) -> dict[str, Any]:
+        """Lossless form for a checkpoint — no rounding, tuples become lists."""
+        return {
+            "case_id": self.case_id,
+            "alert_id": self.alert_id,
+            "txn_id": self.txn_id,
+            "card_id": self.card_id,
+            "opened_at": self.opened_at,
+            "priority": self.priority,
+            "amount": self.amount,
+            "headline": self.headline,
+            "trigger": self.trigger,
+            "ml_score": self.ml_score,
+            "rule_score": self.rule_score,
+            "reasons": list(self.reasons),
+            "rules": list(self.rules),
+            "opened_seq": self.opened_seq,
+            "disposition": self.disposition,
+            "analyst": self.analyst,
+            "note": self.note,
+            "decided_at": self.decided_at,
+            "decided_seq": self.decided_seq,
+        }
+
+    @classmethod
+    def from_state(cls, state: Mapping[str, Any]) -> CaseView:
+        """Inverse of :meth:`to_state`."""
+        return cls(
+            case_id=state["case_id"],
+            alert_id=state["alert_id"],
+            txn_id=int(state["txn_id"]),
+            card_id=state["card_id"],
+            opened_at=float(state["opened_at"]),
+            priority=float(state["priority"]),
+            amount=float(state["amount"]),
+            headline=state["headline"],
+            trigger=state["trigger"],
+            ml_score=float(state["ml_score"]),
+            rule_score=float(state["rule_score"]),
+            reasons=tuple(state["reasons"]),
+            rules=tuple(state["rules"]),
+            opened_seq=int(state["opened_seq"]),
+            disposition=state["disposition"],
+            analyst=state["analyst"],
+            note=state["note"],
+            decided_at=state["decided_at"],
+            decided_seq=state["decided_seq"],
+        )
 
 
 class CaseQueueProjection(Projection):
@@ -189,3 +238,31 @@ class CaseQueueProjection(Projection):
             "outcomes": self.outcome_counts(),
             "cases": {cid: self._cases[cid].to_dict() for cid in sorted(self._cases)},
         }
+
+    # ------------------------------------------------------------ checkpoints
+
+    def checkpoint(self) -> dict[str, Any]:
+        return {
+            "cases": {cid: self._cases[cid].to_state() for cid in sorted(self._cases)},
+            "scores": {str(txn): list(pair) for txn, pair in sorted(self._scores.items())},
+            "fires": {
+                str(txn): [list(fire) for fire in fires]
+                for txn, fires in sorted(self._fires.items())
+            },
+            "triggers": {str(txn): trig for txn, trig in sorted(self._triggers.items())},
+        }
+
+    def restore(self, state: Mapping[str, Any]) -> None:
+        self._cases = {
+            cid: CaseView.from_state(raw) for cid, raw in state.get("cases", {}).items()
+        }
+        self._scores = {
+            int(txn): (float(pair[0]), float(pair[1]))
+            for txn, pair in state.get("scores", {}).items()
+        }
+        self._fires = {
+            int(txn): [(fire[0], fire[1]) for fire in fires]
+            for txn, fires in state.get("fires", {}).items()
+        }
+        self._triggers = {int(txn): trig for txn, trig in state.get("triggers", {}).items()}
+        self._order_dirty = True

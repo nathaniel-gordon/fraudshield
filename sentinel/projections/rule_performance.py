@@ -13,6 +13,7 @@ already in the stream, which is precisely why they were made events.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from ..domain.events import (
@@ -126,3 +127,32 @@ class RulePerformanceProjection(Projection):
 
     def snapshot(self) -> dict[str, Any]:
         return {"rules": self.rows()}
+
+    # ------------------------------------------------------------ checkpoints
+
+    def checkpoint(self) -> dict[str, Any]:
+        # _pending_labels has to travel too. It is cleared on a size trigger rather
+        # than on a record boundary, so a restore that started it empty would drop
+        # labels the from-zero fold still had, and the two would disagree.
+        return {
+            "rules": {name: dict(raw) for name, raw in sorted(self._rules.items())},
+            "labels": {str(txn): label for txn, label in sorted(self._labels.items())},
+            "txn_rules": {
+                str(txn): sorted(names) for txn, names in sorted(self._txn_rules.items())
+            },
+            "case_txn": dict(sorted(self._case_txn.items())),
+            "pending_labels": {
+                str(txn): label for txn, label in sorted(self._pending_labels.items())
+            },
+        }
+
+    def restore(self, state: Mapping[str, Any]) -> None:
+        self._rules = {name: dict(raw) for name, raw in state.get("rules", {}).items()}
+        self._labels = {int(txn): int(label) for txn, label in state.get("labels", {}).items()}
+        self._txn_rules = {
+            int(txn): set(names) for txn, names in state.get("txn_rules", {}).items()
+        }
+        self._case_txn = {case: int(txn) for case, txn in state.get("case_txn", {}).items()}
+        self._pending_labels = {
+            int(txn): int(label) for txn, label in state.get("pending_labels", {}).items()
+        }
