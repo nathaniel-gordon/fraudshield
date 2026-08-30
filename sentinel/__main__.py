@@ -225,7 +225,6 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
 
 
 def cmd_replay(args: argparse.Namespace) -> int:
-    _rule("REPLAY — rebuild every projection from the log alone")
     store = EventStore(paths.input_file(args.log))
     try:
         verified = store.verify()
@@ -238,6 +237,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
                 "fingerprints": first.fingerprints(),
             })
             return 0
+        _rule("REPLAY — rebuild every projection from the log alone")
         print(f"  hash chain verified over {verified:,} records; head {store.head_hash[:16]}")
         print(f"  rebuilt twice, fingerprints identical: "
               f"{first.fingerprint() == second.fingerprint()}")
