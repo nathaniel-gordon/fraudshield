@@ -4,6 +4,11 @@ This is the artifact a chargeback dispute or a regulator actually asks for. It i
 generated, summarised or reconstructed from a report — it is the literal subsequence
 of the log that concerns one transaction, with sequence numbers and chain hashes so
 the reader can verify it against the archived file themselves.
+
+Building it is two index lookups, not a scan. The log stores each record's ``txn_id``
+and ``case_id`` alongside the payload precisely so that pulling one case's facts out
+of a multi-hundred-thousand record log does not mean decoding all of it — which it
+did, at roughly two seconds per keystroke, when this walked the whole file.
 """
 from __future__ import annotations
 
@@ -38,45 +43,23 @@ class TrailEntry:
 def case_trail(store: EventStore, case_id: str) -> list[TrailEntry]:
     """Collect, in log order, every fact that bears on ``case_id``.
 
-    Two passes are avoided by first resolving the case's transaction id from the
-    ``CaseOpened`` record, then keeping any record that names either the case or
-    that transaction. A single forward scan is enough because the log is ordered.
+    A case's facts are its own (``CaseOpened``, ``CaseDispositioned``) plus everything
+    recorded against the transaction it was opened on. Both are indexed, so this is
+    two lookups and a merge rather than a walk of the log.
+
+    Returns:
+        The trail in sequence order, or an empty list when the case was never opened.
     """
-    txn_id: int | None = None
-    entries: list[TrailEntry] = []
-    for rec in store.read():
-        ev = rec.event
-        if isinstance(ev, CaseOpened) and ev.case_id == case_id:
-            txn_id = ev.txn_id
-            entries.append(TrailEntry(rec.seq, rec.type, rec.hash, _describe(rec)))
-            continue
-        if isinstance(ev, CaseDispositioned) and ev.case_id == case_id:
-            entries.append(TrailEntry(rec.seq, rec.type, rec.hash, _describe(rec)))
-            continue
-        if txn_id is None:
-            # Buffer only while we do not yet know the transaction: keep a rolling
-            # window of the current transaction's events so we can emit them once
-            # the CaseOpened arrives.
-            entries = _rolling(entries, rec)
-            continue
-        if getattr(ev, "txn_id", None) == txn_id:
-            entries.append(TrailEntry(rec.seq, rec.type, rec.hash, _describe(rec)))
-    # If the case was never opened, whatever the rolling buffer holds is unrelated.
-    return entries if txn_id is not None else []
-
-
-def _rolling(entries: list[TrailEntry], rec: Recorded) -> list[TrailEntry]:
-    """Keep the pre-case events of the transaction currently being processed.
-
-    A ``TransactionObserved`` starts a new group; rules and the score append to it.
-    Anything else (an unrelated case disposition) leaves the group untouched.
-    """
-    ev = rec.event
-    if isinstance(ev, TransactionObserved):
-        return [TrailEntry(rec.seq, rec.type, rec.hash, _describe(rec))]
-    if isinstance(ev, (RuleTriggered, RiskScored, AlertRaised)):
-        entries.append(TrailEntry(rec.seq, rec.type, rec.hash, _describe(rec)))
-    return entries
+    txn_id = store.txn_of_case(case_id)
+    if txn_id is None:
+        return []
+    by_seq: dict[int, Recorded] = {rec.seq: rec for rec in store.records_for_txn(txn_id)}
+    for rec in store.records_for_case(case_id):
+        by_seq[rec.seq] = rec
+    return [
+        TrailEntry(rec.seq, rec.type, rec.hash, _describe(rec))
+        for _, rec in sorted(by_seq.items())
+    ]
 
 
 def _describe(rec: Recorded) -> str:
@@ -104,3 +87,6 @@ def _describe(rec: Recorded) -> str:
         note = f" — {ev.note}" if ev.note else ""
         return f"{ev.analyst} marked it {ev.disposition}{note}"
     return rec.type
+
+
+__all__ = ["TrailEntry", "case_trail"]

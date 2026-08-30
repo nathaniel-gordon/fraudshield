@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
 from ..domain.events import AlertRaised, RiskScored, RuleTriggered, TransactionObserved
-from ..domain.policy import AlertPolicy, rule_score_from
+from ..domain.policy import AlertPolicy, CostModel, rule_score_from
 from ..store.sqlite_store import EventStore
 
 
@@ -79,11 +79,11 @@ class VariantResult:
         p, r = self.precision, self.recall
         return round(2 * p * r / (p + r), 4) if (p + r) else 0.0
 
-    def cost(self, fp_cost: float, fn_cost: float) -> float:
+    def cost(self, costs: CostModel) -> float:
         """Expected operating cost: analyst hours burnt plus fraud losses taken."""
-        return round(self.fp * fp_cost + self.fn * fn_cost, 2)
+        return round(costs.expected(self.fp, self.fn), 2)
 
-    def as_row(self, fp_cost: float, fn_cost: float) -> dict[str, Any]:
+    def as_row(self, costs: CostModel) -> dict[str, Any]:
         return {
             "variant": self.label,
             "settings": self.description,
@@ -94,7 +94,7 @@ class VariantResult:
             "precision": self.precision,
             "recall": self.recall,
             "f1": self.f1,
-            "cost": self.cost(fp_cost, fn_cost),
+            "cost": self.cost(costs),
         }
 
 
@@ -193,8 +193,6 @@ def standard_sweep(policy: AlertPolicy) -> list[PolicyVariant]:
     ]
 
 
-def sweep_rows(
-    results: Iterable[VariantResult], fp_cost: float, fn_cost: float
-) -> list[dict[str, Any]]:
-    """Tabulate variant results for the report and the dashboard."""
-    return [r.as_row(fp_cost, fn_cost) for r in results]
+def sweep_rows(results: Iterable[VariantResult], costs: CostModel) -> list[dict[str, Any]]:
+    """Tabulate variant results for the report, the dashboard and the JSON output."""
+    return [r.as_row(costs) for r in results]

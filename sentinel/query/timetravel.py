@@ -9,11 +9,10 @@ lets the reviewer judge the decision on the evidence available at the time.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
-from ..domain.events import AlertRaised, CaseOpened
+from ..errors import CaseNotFound
 from ..projections.registry import ReadModel
-from ..store.codec import Recorded
 from ..store.sqlite_store import EventStore
 
 
@@ -22,26 +21,13 @@ def read_model_as_of(store: EventStore, seq: int) -> ReadModel:
     return ReadModel.rebuild(store, upto_seq=seq)
 
 
-def seq_where(store: EventStore, predicate: Callable[[Recorded], bool]) -> int | None:
-    """Sequence number of the first record satisfying ``predicate``."""
-    for rec in store.read():
-        if predicate(rec):
-            return rec.seq
-    return None
-
-
-def seq_of_alert(store: EventStore, alert_id: str) -> int | None:
-    """Where in the log a given alert was raised."""
-    return seq_where(
-        store, lambda r: isinstance(r.event, AlertRaised) and r.event.alert_id == alert_id
-    )
-
-
 def seq_of_case(store: EventStore, case_id: str) -> int | None:
-    """Where in the log a given case was opened."""
-    return seq_where(
-        store, lambda r: isinstance(r.event, CaseOpened) and r.event.case_id == case_id
-    )
+    """Where in the log a given case was opened.
+
+    Delegates to the store's ``case_id`` index. Finding this by scanning cost a
+    full pass over the log every time the analyst pressed ``t``.
+    """
+    return store.seq_of_case(case_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,15 +63,15 @@ def knowledge_at_case(store: EventStore, case_id: str, live: ReadModel) -> Knowl
         live: the current read model, used for the "now" side of the comparison.
 
     Raises:
-        KeyError: if the case is not in the log.
+        CaseNotFound: if the case is not in the log.
     """
     at = seq_of_case(store, case_id)
     if at is None:
-        raise KeyError(f"case {case_id!r} was never opened in this log")
+        raise CaseNotFound(f"case {case_id!r} was never opened in this log", case_id=case_id)
     past = read_model_as_of(store, at)
     case = past.cases.get(case_id)
     if case is None:  # pragma: no cover - guaranteed by seq_of_case
-        raise KeyError(f"case {case_id!r} missing from as-of read model")
+        raise CaseNotFound(f"case {case_id!r} missing from as-of read model", case_id=case_id)
     return KnowledgeSnapshot(
         case_id=case_id,
         card_id=case.card_id,
@@ -96,3 +82,6 @@ def knowledge_at_case(store: EventStore, case_id: str, live: ReadModel) -> Knowl
         queue_depth_then=past.cases.open_count,
         queue_depth_now=live.cases.open_count,
     )
+
+
+__all__ = ["KnowledgeSnapshot", "knowledge_at_case", "read_model_as_of", "seq_of_case"]
