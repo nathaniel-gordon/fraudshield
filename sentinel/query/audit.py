@@ -19,7 +19,7 @@ from ..domain.events import (
     TransactionObserved,
 )
 from ..store.codec import Recorded
-from ..store.jsonl_store import EventStore
+from ..store.sqlite_store import EventStore
 
 
 @dataclass(frozen=True, slots=True)

@@ -14,7 +14,7 @@ from typing import Any, Callable
 from ..domain.events import AlertRaised, CaseOpened
 from ..projections.registry import ReadModel
 from ..store.codec import Recorded
-from ..store.jsonl_store import EventStore
+from ..store.sqlite_store import EventStore
 
 
 def read_model_as_of(store: EventStore, seq: int) -> ReadModel:

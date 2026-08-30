@@ -1,14 +1,18 @@
 """Serialisation and the tamper-evident hash chain.
 
-One JSON object per line. The line format is the durable contract of this system,
-so it is defined in exactly one place:
+The record contract is defined in exactly one place, here, and is the same whether a
+record lives in a SQLite row or in a line of an exported JSONL archive:
 
     {"seq": 1, "type": "TransactionObserved", "prev": "<64 hex>", "hash": "<64 hex>",
      "data": { ... }}
 
-``hash`` chains each record to its predecessor. Fraud evidence is only worth
-anything if you can prove nobody edited it after the fact, and a chain makes any
-in-place edit, deletion or reordering detectable by a single forward walk.
+``hash`` chains each record to its predecessor, so any in-place edit, deletion or
+reordering is caught by a single forward walk (:meth:`EventStore.verify`).
+
+What the chain does **not** do, and this is worth being blunt about: it does not stop
+somebody who can write the file from editing a payload and recomputing every
+downstream hash. Detecting that needs an anchor the attacker cannot recompute — see
+:mod:`sentinel.store.seal`, which MACs the head with a key held outside the database.
 """
 from __future__ import annotations
 
@@ -16,9 +20,12 @@ import hashlib
 import json
 from dataclasses import dataclass
 from dataclasses import fields as dataclass_fields
-from typing import Any
+from functools import lru_cache
+from types import UnionType
+from typing import Any, Union, get_args, get_origin, get_type_hints
 
 from ..domain.events import EVENT_TYPES, DomainEvent
+from ..errors import ChainBroken, LogCorrupt
 
 #: The chain's anchor. Record 1 has this as its predecessor hash.
 GENESIS_HASH = "0" * 64
@@ -33,10 +40,19 @@ def canonical_json(payload: Any) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+def chain_hash_text(prev_hash: str, seq: int, type_name: str, data_json: str) -> str:
+    """Chain hash computed from already-canonical payload text.
+
+    The storage layer keeps the canonical text it hashed, so verification can hash
+    exactly those bytes rather than a re-serialised structure.
+    """
+    material = f"{prev_hash}|{seq}|{type_name}|{data_json}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
 def chain_hash(prev_hash: str, seq: int, type_name: str, data: dict[str, Any]) -> str:
     """Hash of this record bound to its position and its predecessor."""
-    material = f"{prev_hash}|{seq}|{type_name}|{canonical_json(data)}"
-    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+    return chain_hash_text(prev_hash, seq, type_name, canonical_json(data))
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,10 +73,6 @@ class Recorded:
         return self.event.type
 
 
-class ChainBroken(Exception):
-    """Raised when the log fails verification — i.e. the evidence was altered."""
-
-
 def encode(seq: int, event: DomainEvent, prev_hash: str) -> tuple[str, Recorded]:
     """Return the JSONL line and the resulting :class:`Recorded` for one event."""
     data = event.to_data()
@@ -71,40 +83,89 @@ def encode(seq: int, event: DomainEvent, prev_hash: str) -> tuple[str, Recorded]
     return line, Recorded(seq=seq, event=event, prev_hash=prev_hash, hash=digest)
 
 
-def decode(line: str) -> Recorded:
-    """Parse one JSONL line back into a :class:`Recorded`.
+def event_from_data(type_name: str, data: dict[str, Any], *, seq: int | None = None) -> DomainEvent:
+    """Rehydrate one event from its payload.
 
     Raises:
-        ChainBroken: if the type is unknown or the payload does not hash to the
-            value written on the line.
+        ChainBroken: the type name is not in this build's vocabulary, so the record
+            cannot be folded and pretending otherwise would silently drop history.
     """
-    obj = json.loads(line)
-    type_name = obj["type"]
     cls = EVENT_TYPES.get(type_name)
     if cls is None:
-        raise ChainBroken(f"unknown event type {type_name!r} at seq {obj.get('seq')}")
-    data = obj["data"]
-    expected = chain_hash(obj["prev"], obj["seq"], type_name, data)
-    if expected != obj["hash"]:
+        raise ChainBroken(f"unknown event type {type_name!r}", seq=seq, type=type_name)
+    return cls.from_data(_coerce(cls, data))
+
+
+def decode(line: str) -> Recorded:
+    """Parse one JSONL line back into a :class:`Recorded`, checking its own hash.
+
+    Raises:
+        LogCorrupt: the line is not complete, well-formed JSON (a torn write).
+        ChainBroken: the type is unknown, or the payload does not hash to the value
+            written on the line.
+    """
+    try:
+        obj = json.loads(line)
+        type_name = obj["type"]
+        seq = int(obj["seq"])
+        prev, digest, data = obj["prev"], obj["hash"], obj["data"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise LogCorrupt(f"line is not a complete record: {exc}") from exc
+    expected = chain_hash(prev, seq, type_name, data)
+    if expected != digest:
         raise ChainBroken(
-            f"record {obj['seq']} ({type_name}) fails its own hash — payload was altered"
+            f"record {seq} ({type_name}) fails its own hash — payload was altered",
+            seq=seq,
+            type=type_name,
         )
     return Recorded(
-        seq=int(obj["seq"]),
-        event=cls.from_data(_coerce(cls, data)),
-        prev_hash=obj["prev"],
-        hash=obj["hash"],
+        seq=seq, event=event_from_data(type_name, data, seq=seq), prev_hash=prev, hash=digest
+    )
+
+
+def _mentions_tuple(annotation: Any) -> bool:
+    """True when a resolved annotation is a tuple, or a union containing one."""
+    origin = get_origin(annotation)
+    if origin is tuple:
+        return True
+    if origin in (Union, UnionType):
+        return any(_mentions_tuple(arg) for arg in get_args(annotation))
+    return False
+
+
+@lru_cache(maxsize=None)
+def _tuple_fields(cls: type) -> frozenset[str]:
+    """Field names whose declared type is (or includes) a tuple.
+
+    Resolved from real type objects rather than by sniffing the annotation string,
+    so a field annotated ``Sequence[str]`` is not silently mishandled.
+    """
+    hints = get_type_hints(cls)
+    return frozenset(
+        f.name for f in dataclass_fields(cls) if _mentions_tuple(hints.get(f.name))  # type: ignore[arg-type]
     )
 
 
 def _coerce(cls: type[DomainEvent], data: dict[str, Any]) -> dict[str, Any]:
-    """Restore tuple-typed fields that JSON flattened into lists.
-
-    Only ``DetectionPolicyAdopted.features`` needs this today, but doing it by
-    annotation keeps the codec honest as the vocabulary grows.
-    """
+    """Restore tuple-typed fields that JSON flattened into lists."""
+    names = _tuple_fields(cls)
+    if not names:
+        return data
     out = dict(data)
-    for field in dataclass_fields(cls):  # type: ignore[arg-type]
-        if "tuple" in str(field.type) and isinstance(out.get(field.name), list):
-            out[field.name] = tuple(out[field.name])
+    for name in names:
+        if isinstance(out.get(name), list):
+            out[name] = tuple(out[name])
     return out
+
+
+__all__ = [
+    "GENESIS_HASH",
+    "ChainBroken",
+    "Recorded",
+    "canonical_json",
+    "chain_hash",
+    "chain_hash_text",
+    "decode",
+    "encode",
+    "event_from_data",
+]

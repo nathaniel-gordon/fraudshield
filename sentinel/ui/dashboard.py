@@ -25,7 +25,7 @@ from ..projections.registry import ReadModel
 from ..query.audit import case_trail
 from ..query.counterfactual import replay_variants, standard_sweep, sweep_rows
 from ..query.timetravel import knowledge_at_case
-from ..store.jsonl_store import EventStore
+from ..store.sqlite_store import EventStore
 from .ansi import (
     BOLD,
     DIM,

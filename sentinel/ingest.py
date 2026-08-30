@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterator
 
 import pandas as pd
 
@@ -30,7 +30,7 @@ from .detection.synthetic import generate_transactions
 from .domain.clock import SteppingClock
 from .domain.policy import DEFAULT_RULE_WEIGHT, DEFAULT_RULES_ONLY_FLOOR, AlertPolicy
 from .projections.registry import ReadModel
-from .store.jsonl_store import EventStore
+from .store.sqlite_store import EventStore
 
 #: Columns a real transaction export must provide. ``fraud``/``fraud_mode`` are
 #: optional and only used for offline evaluation.
@@ -175,11 +175,11 @@ def build_event_log(
             fn_cost=fn_cost,
             auc=float(metrics.get("auc", 0.0)),
             avg_precision=float(metrics.get("avg_precision", 0.0)),
-            train_rows=int(metrics.get("test_rows", 0)),
+            train_rows=int(metrics.get("train_rows", 0)),
             features=tuple(FEATURES),
         )
     )
-    commands = to_commands(df)
+    commands = list(to_commands(df))
     written = bus.submit_many(commands, batch=batch, progress=progress)
     return BuiltLog(
         store=store,
@@ -192,10 +192,15 @@ def build_event_log(
     )
 
 
-def to_commands(df: pd.DataFrame) -> list[ObserveTransaction]:
-    """Convert a corpus into time-ordered observation commands."""
-    ordered = df.sort_values("ts")
-    return [ObserveTransaction.from_row(row) for row in ordered.to_dict("records")]
+def to_commands(df: pd.DataFrame) -> Iterator[ObserveTransaction]:
+    """Yield time-ordered observation commands.
+
+    A generator rather than a list: the bus chunks it anyway, and materialising one
+    command object per transaction alongside the frame doubles peak memory on a
+    corpus of any size.
+    """
+    for row in df.sort_values("ts").itertuples(index=False):
+        yield ObserveTransaction.from_row(row._asdict())
 
 
 def alert_quality(read_model: ReadModel, df: pd.DataFrame) -> dict[str, Any]:
@@ -219,8 +224,3 @@ def alert_quality(read_model: ReadModel, df: pd.DataFrame) -> dict[str, Any]:
         "recall": round(tp / max(total_fraud, 1), 3),
         "processed": int(read_model.metrics.totals()["txns"]),
     }
-
-
-def iter_case_ids(read_model: ReadModel, limit: int) -> Iterable[str]:
-    """Top-priority open case ids — used by the scripted demo to pick targets."""
-    return [c.case_id for c in read_model.cases.open_cases(limit)]

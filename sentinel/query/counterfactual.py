@@ -20,7 +20,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from ..domain.events import AlertRaised, RiskScored, RuleTriggered, TransactionObserved
 from ..domain.policy import AlertPolicy, rule_score_from
-from ..store.jsonl_store import EventStore
+from ..store.sqlite_store import EventStore
 
 
 @dataclass(frozen=True, slots=True)

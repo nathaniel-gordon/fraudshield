@@ -15,7 +15,7 @@ event, and every read model is a pure fold over those events.
 """
 from .domain.policy import AlertPolicy
 from .projections.registry import ReadModel
-from .store.jsonl_store import EventStore
+from .store.sqlite_store import EventStore
 
 __version__ = "2.0.0"
 __all__ = ["AlertPolicy", "EventStore", "ReadModel", "__version__"]

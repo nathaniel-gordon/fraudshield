@@ -12,7 +12,7 @@ import hashlib
 from typing import Any, Iterable, Sequence
 
 from ..store.codec import Recorded, canonical_json
-from ..store.jsonl_store import EventStore
+from ..store.sqlite_store import EventStore
 from .base import Projection
 from .card_profile import CardProfileProjection
 from .case_queue import CaseQueueProjection

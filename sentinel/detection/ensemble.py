@@ -48,6 +48,7 @@ class FraudModels:
             "threshold": round(float(self.threshold), 4),
             "precision": round(tp / (tp + fp), 3) if tp + fp else 0.0,
             "recall": round(tp / (tp + fn), 3) if tp + fn else 0.0,
+            "train_rows": len(tr), "train_frauds": int(y_tr.sum()),
             "test_frauds": int(y_te.sum()), "test_rows": len(te),
         }
         return self.metrics

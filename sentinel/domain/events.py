@@ -196,6 +196,37 @@ def case_id_for(txn_id: int) -> str:
     return f"CASE-{txn_id:08d}"
 
 
+#: Stream every system-level fact (the policy header) belongs to.
+SYSTEM_STREAM = "system"
+
+
+def stream_id_for(event: DomainEvent) -> str:
+    """The stream a fact belongs to — the unit of ordering and of concurrency.
+
+    A card is the natural aggregate here: transactions, rules, scores, alerts and the
+    case they open are all facts about one card, and two writers must not interleave
+    on it. A disposition names only its case, so it streams under the case.
+    """
+    card_id = getattr(event, "card_id", "")
+    if card_id:
+        return f"card:{card_id}"
+    case_id = getattr(event, "case_id", "")
+    if case_id:
+        return f"case:{case_id}"
+    return SYSTEM_STREAM
+
+
+def index_keys(event: DomainEvent) -> tuple[int | None, str | None]:
+    """``(txn_id, case_id)`` for the storage layer's lookup indexes.
+
+    These are denormalised out of the payload purely so the analyst queries do not
+    have to scan the whole log. They are not part of the hashed record.
+    """
+    txn_id = getattr(event, "txn_id", None)
+    case_id = getattr(event, "case_id", None)
+    return (int(txn_id) if txn_id is not None else None, str(case_id) if case_id else None)
+
+
 #: Wire-name -> class, used by the codec. Extending the vocabulary means adding here.
 EVENT_TYPES: dict[str, type[DomainEvent]] = {
     cls.__name__: cls

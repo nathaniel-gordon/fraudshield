@@ -26,13 +26,15 @@ import pandas as pd
 
 from .detection.ensemble import FraudModels
 from .domain.events import Disposition
+from .errors import InvalidPath
 from .domain.policy import AlertPolicy
 from .ingest import BuiltLog, CorpusConfig, alert_quality, build_event_log, load_corpus, wire
 from .projections.registry import ReadModel
 from .query.audit import case_trail
 from .query.counterfactual import replay_variants, standard_sweep, sweep_rows
 from .query.timetravel import knowledge_at_case
-from .store.jsonl_store import EventStore
+from . import paths
+from .store.sqlite_store import EventStore
 from .ui.ansi import Palette, configure_stdout, supports_color
 from .ui.dashboard import Dashboard
 from .ui.runner import DEMO_SCRIPT, run_live, run_scripted
@@ -105,7 +107,7 @@ def ingest(args: argparse.Namespace, *, quiet: bool = False) -> Ingested:
         modes = df[df["fraud"] == 1]["fraud_mode"].value_counts().to_dict()
         print(f"  corpus: {len(df):,} transactions, {int((df['fraud'] == 1).sum())} labelled fraud "
               f"({(df['fraud'] == 1).mean():.2%}) across {modes}")
-    store = EventStore(Path(args.log), append=False)
+    store = EventStore.create_fresh(paths.output_file(args.log))
 
     def progress(done: int, events: int) -> None:
         if not quiet:
@@ -114,9 +116,6 @@ def ingest(args: argparse.Namespace, *, quiet: bool = False) -> Ingested:
 
     built = build_event_log(df, store, seed=args.seed, fp_cost=FP_COST, fn_cost=FN_COST,
                             progress=progress)
-    # The detector is persisted so `dashboard` can attach a write side to this log
-    # later. The *query* side never needs it — the log holds every score already.
-    built.bus.handler_for  # noqa: B018 - fails loudly now if wiring is broken
     _save_detector(built)
     if not quiet:
         print()
@@ -150,9 +149,10 @@ def _open_existing(log_path: str) -> tuple[EventStore, ReadModel, AlertPolicy]:
     Note what is *not* loaded here: the model file. The log carries every score that
     was ever computed, so the whole query side runs without scikit-learn.
     """
-    path = Path(log_path)
-    if not path.exists():
-        raise SystemExit(f"no event log at {path} — run `python -m sentinel build` first")
+    try:
+        path = paths.input_file(log_path)
+    except InvalidPath as exc:
+        raise SystemExit(f"{exc.message}: {log_path} — run `python -m sentinel build` first") from exc
     store = EventStore(path)
     header = next(store.read(upto_seq=1), None)
     if header is None or header.type != "DetectionPolicyAdopted":
@@ -188,7 +188,7 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
 
 def cmd_replay(args: argparse.Namespace) -> int:
     _rule("REPLAY — rebuild every projection from the log alone")
-    store = EventStore(Path(args.log))
+    store = EventStore(paths.input_file(args.log))
     verified = store.verify()
     first, second = ReadModel.rebuild(store), ReadModel.rebuild(store)
     print(f"  hash chain verified over {verified:,} records; head {store.head_hash[:16]}")
@@ -201,7 +201,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
 
 def cmd_audit(args: argparse.Namespace) -> int:
     _rule(f"AUDIT TRAIL — {args.case}")
-    store = EventStore(Path(args.log))
+    store = EventStore(paths.input_file(args.log))
     trail = case_trail(store, args.case)
     store.close()
     if not trail:
@@ -341,7 +341,7 @@ def _write_artifacts(store: EventStore, read_model: ReadModel, policy: AlertPoli
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m sentinel", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--log", default=str(OUT / "events.jsonl"), help="path to the event log")
+    p.add_argument("--log", default=str(OUT / "events.db"), help="path to the event log")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--width", type=int, default=112, help="console width in columns")
     p.add_argument("--height", type=int, default=30, help="console height in rows")
