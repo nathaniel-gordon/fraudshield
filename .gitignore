@@ -45,3 +45,12 @@ htmlcov/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Generated run artifacts — the log, the fitted model and the reports are all
+# reproducible from `python -m sentinel demo`.
+output/
+.ruff_cache/
+.mypy_cache/
+
+# Local secrets
+.env
