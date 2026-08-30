@@ -76,6 +76,22 @@ MIGRATIONS: tuple[Migration, ...] = (
             """,
         ),
     ),
+    Migration(
+        2,
+        "seals anchoring the chain head",
+        (
+            """
+            CREATE TABLE IF NOT EXISTS seals (
+                seq          INTEGER PRIMARY KEY,
+                head_hash    TEXT    NOT NULL,
+                record_count INTEGER NOT NULL,
+                key_id       TEXT    NOT NULL,
+                mac          TEXT    NOT NULL,
+                sealed_at    REAL    NOT NULL
+            )
+            """,
+        ),
+    ),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version
