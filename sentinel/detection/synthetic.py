@@ -58,11 +58,11 @@ def generate_transactions(n_cards: int = 600, days: int = 45, seed: int = 42,
     fraud_rows = []
     for card in fraud_cards:
         g = df[df["card_id"] == card]
-        anchor = g.sample(1, random_state=int(rng.integers(1e9))).iloc[0]
+        anchor = g.sample(1, random_state=int(rng.integers(1_000_000_000))).iloc[0]
         mode = str(rng.choice(["burst", "travel", "takeover"]))
         start = anchor["ts"] + rng.uniform(3600, 7200)
         if mode == "burst":
-            amounts = [rng.uniform(1, 9)] + list(rng.uniform(180, 900, rng.integers(3, 6)))
+            amounts = [rng.uniform(1, 9), *rng.uniform(180, 900, rng.integers(3, 6))]
             for i, amt in enumerate(amounts):
                 fraud_rows.append(dict(anchor, txn_id=-1, ts=start + i * rng.uniform(60, 240),
                                        amount=round(float(amt), 2), category="electronics",

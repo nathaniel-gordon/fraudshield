@@ -73,7 +73,7 @@ def test_bulk_ingest_skips_commands_already_on_the_log(fresh_bus):
     assert store.last_seq == seq_after_first
 
     half = bus.submit_many(
-        batch[10:] + [ObserveTransaction(**{**vars_of(OBSERVATION), "txn_id": 99,
+        [*batch[10:], ObserveTransaction(**{**vars_of(OBSERVATION), "txn_id": 99,
                                             "occurred_at": 2000.0})],
         batch=8,
     )

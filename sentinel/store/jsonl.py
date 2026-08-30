@@ -14,9 +14,9 @@ those are edits, not accidents.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
 
 from ..errors import ChainBroken, LogCorrupt
 from ..obs import get_logger

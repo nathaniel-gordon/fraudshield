@@ -9,7 +9,8 @@ hidden state and the audit trail can no longer be trusted.
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Iterable, Sequence
+from collections.abc import Iterable, Sequence
+from typing import Any
 
 from ..store.codec import Recorded, canonical_json
 from ..store.sqlite_store import EventStore
@@ -49,13 +50,13 @@ class ReadModel:
         self.applied += 1
         self.upto_seq = rec.seq
 
-    def apply_all(self, records: Iterable[Recorded]) -> "ReadModel":
+    def apply_all(self, records: Iterable[Recorded]) -> ReadModel:
         for rec in records:
             self.apply(rec)
         return self
 
     @classmethod
-    def rebuild(cls, store: EventStore, upto_seq: int | None = None) -> "ReadModel":
+    def rebuild(cls, store: EventStore, upto_seq: int | None = None) -> ReadModel:
         """Construct a fresh read model purely by replaying the log.
 
         Args:

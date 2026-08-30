@@ -12,8 +12,9 @@ a delivery id worth honouring.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 from ..domain.events import Disposition
 
@@ -36,7 +37,7 @@ class ObserveTransaction:
     command_id: str = ""
 
     @classmethod
-    def from_row(cls, row: Mapping[str, Any]) -> "ObserveTransaction":
+    def from_row(cls, row: Mapping[str, Any]) -> ObserveTransaction:
         """Build from a transaction-export row.
 
         ``label``/``label_mode`` default to "unknown" so the same command works for a

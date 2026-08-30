@@ -15,8 +15,9 @@ not a change.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 
 from ..domain.events import AlertRaised, RiskScored, RuleTriggered, TransactionObserved
 from ..domain.policy import AlertPolicy, CostModel, rule_score_from
@@ -138,7 +139,7 @@ def replay_variants(
             # for this transaction has already been seen.
             txn_fires = fires.pop(ev.txn_id, {})
             label = labels.pop(ev.txn_id, -1)
-            for variant, result, alerted in zip(variants, results, variant_alerts):
+            for variant, result, alerted in zip(variants, results, variant_alerts, strict=True):
                 rule_score = variant.rule_score(txn_fires)
                 fired = variant.policy.should_alert(ev.ml_score, rule_score)
                 if label >= 0:
@@ -156,7 +157,7 @@ def replay_variants(
                     result.fn += 1
 
     if verify_against_log:
-        for result, alerted in zip(results, variant_alerts):
+        for result, alerted in zip(results, variant_alerts, strict=True):
             result.matches_log = alerted == logged_alerts
     return results
 

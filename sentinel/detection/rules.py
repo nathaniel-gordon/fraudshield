@@ -11,7 +11,8 @@ tuple of strings) so the command side can emit one ``RuleTriggered`` event per f
 """
 from __future__ import annotations
 
-from typing import Callable, NamedTuple
+from collections.abc import Callable
+from typing import NamedTuple
 
 
 class RuleFire(NamedTuple):

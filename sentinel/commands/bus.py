@@ -17,8 +17,8 @@ and counts the command as a duplicate rather than an acceptance.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from typing import Iterable, Iterator
 
 from ..errors import NoHandler
 from ..obs import Timer, get_logger
@@ -56,7 +56,7 @@ class CommandBus:
         self.rejected = 0
         self.duplicates = 0
 
-    def register(self, command_type: type, handler: object) -> "CommandBus":
+    def register(self, command_type: type, handler: object) -> CommandBus:
         """Bind a command type to its handler. Returns self so wiring reads as a chain."""
         self._handlers[command_type] = handler
         return self
@@ -127,14 +127,14 @@ class CommandBus:
         for chunk in _chunks(commands, batch):
             keys = [command_key(cmd) for cmd in chunk]
             known = self.store.known_commands(keys)
-            fresh = [(key, cmd) for key, cmd in zip(keys, chunk) if key not in known]
+            fresh = [(key, cmd) for key, cmd in zip(keys, chunk, strict=True) if key not in known]
             duplicates += len(chunk) - len(fresh)
             done += len(chunk)
             if fresh:
                 per_command = handler.handle_batch([cmd for _, cmd in fresh])
                 groups = [
                     CommandGroup(events, key, "ObserveTransaction")
-                    for (key, _), events in zip(fresh, per_command)
+                    for (key, _), events in zip(fresh, per_command, strict=True)
                 ]
                 for rec in self.store.append_groups(groups):
                     self.read_model.apply(rec)

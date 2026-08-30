@@ -10,9 +10,10 @@ result (``DetectionPolicyAdopted``) and every decision that policy then produced
 """
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any
 
 import pandas as pd
 

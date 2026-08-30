@@ -32,9 +32,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import pandas as pd
 
@@ -514,7 +515,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
           f"1..{snap.at_seq:,} of {snap.now_seq:,}")
     print(f"  {'field':<18} {'at the time':>16} {'now':>16}")
     for field_name, (then, now) in snap.deltas().items():
-        print(f"  {field_name:<18} {str(then):>16} {str(now):>16}")
+        print(f"  {field_name:<18} {then!s:>16} {now!s:>16}")
     print(f"  queue depth then {snap.queue_depth_then:,} vs now {snap.queue_depth_now:,}")
 
     _rule("5/6  AUDIT TRAIL — the exact ordered facts behind that case")
@@ -547,17 +548,18 @@ def _write_artifacts(store: EventStore, read_model: ReadModel, policy: AlertPoli
     lines = [
         "# Fraud Sentinel — event-sourced run report",
         "",
-        f"Event log `{store.path.name}`: {store.last_seq:,} records, "
-        f"chain head `{store.head_hash[:16]}`.",
+        (f"Event log `{store.path.name}`: {store.last_seq:,} records, "
+         f"chain head `{store.head_hash[:16]}`."),
         "",
         "## Detection quality",
         "",
-        f"- model on the temporal holdout: AUC **{metrics['auc']}**, average precision "
-        f"**{metrics['avg_precision']}**, cost-tuned threshold **{metrics['threshold']}**",
-        f"- alert level over the whole stream: precision **{quality['precision']}**, recall "
-        f"**{quality['recall']}** ({quality['tp']} TP / {quality['fp']} FP / {quality['fn']} FN)",
-        f"- policy in force: threshold {policy.alert_threshold:.3f}, rule weight "
-        f"{policy.rule_weight:.2f}, rules-only floor {policy.rules_only_floor:.2f}",
+        (f"- model on the temporal holdout: AUC **{metrics['auc']}**, average precision "
+         f"**{metrics['avg_precision']}**, cost-tuned threshold **{metrics['threshold']}**"),
+        (f"- alert level over the whole stream: precision **{quality['precision']}**, recall "
+         f"**{quality['recall']}** ({quality['tp']} TP / {quality['fp']} FP / "
+         f"{quality['fn']} FN)"),
+        (f"- policy in force: threshold {policy.alert_threshold:.3f}, rule weight "
+         f"{policy.rule_weight:.2f}, rules-only floor {policy.rules_only_floor:.2f}"),
         "",
         "The corpus is synthetic. These numbers describe the generator as much as the",
         "detector; see the Limitations section of the README.",

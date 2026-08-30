@@ -17,9 +17,9 @@ from typing import Any
 
 from ..commands.bus import CommandBus
 from ..commands.messages import DispositionCase
-from ..errors import CommandRejected
 from ..domain.events import Disposition
 from ..domain.policy import AlertPolicy, CostModel
+from ..errors import CommandRejected
 from ..projections.case_queue import CaseView
 from ..projections.registry import ReadModel
 from ..query.audit import case_trail
@@ -591,7 +591,7 @@ class Dashboard:
         if rows is None:
             results = replay_variants(self.store, standard_sweep(self.policy))
             rows = sweep_rows(results, self.costs)
-            for row, result in zip(rows, results):
+            for row, result in zip(rows, results, strict=True):
                 row["matches_log"] = result.matches_log
             self.state.caches["counterfactual"] = rows
         best = min(rows, key=lambda r: r["cost"])["variant"]

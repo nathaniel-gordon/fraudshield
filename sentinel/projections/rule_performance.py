@@ -15,7 +15,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..domain.events import CaseDispositioned, CaseOpened, Disposition, RuleTriggered, TransactionObserved
+from ..domain.events import (
+    CaseDispositioned,
+    CaseOpened,
+    Disposition,
+    RuleTriggered,
+    TransactionObserved,
+)
 from ..store.codec import Recorded
 from .base import Projection, ratio
 

@@ -11,6 +11,7 @@ disabled and compare exact text.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import sys
@@ -116,10 +117,9 @@ def configure_stdout(stream=None) -> Charset:
     stream = stream or sys.stdout
     reconfigure = getattr(stream, "reconfigure", None)
     if reconfigure is not None:
-        try:
+        # A console that refuses the reconfigure gets the ASCII charset below.
+        with contextlib.suppress(ValueError, OSError):  # pragma: no cover - host specific
             reconfigure(encoding="utf-8", errors="replace")
-        except (ValueError, OSError):  # pragma: no cover - depends on the host console
-            pass
     charset = detect_charset(stream)
     use_charset(charset)
     return charset

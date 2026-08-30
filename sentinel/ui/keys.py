@@ -71,8 +71,10 @@ def _read_key_windows() -> str:  # pragma: no cover - needs a real console
 
 
 def _read_key_posix() -> str:  # pragma: no cover - needs a real tty
-    import termios
-    import tty
+    # Both modules are POSIX-only, so they are typed as absent on a Windows build
+    # of mypy. The import cannot run on Windows either: read_key branches first.
+    import termios  # type: ignore[import-not-found,unused-ignore]
+    import tty  # type: ignore[import-not-found,unused-ignore]
 
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)

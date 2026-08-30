@@ -21,9 +21,10 @@ import os
 import sys
 import time
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Iterator
+from typing import Any
 
 #: Fields the stdlib puts on every record; anything else is caller-supplied context.
 _STANDARD = frozenset(vars(logging.LogRecord("", 0, "", 0, "", (), None)))
@@ -100,7 +101,7 @@ def configure_logging(level: str | int | None = None, stream=None) -> logging.Lo
 
 def get_logger(name: str) -> logging.Logger:
     """Logger for a module, always under the package root."""
-    suffix = name.split(".")[-1]
+    suffix = name.rsplit(".", maxsplit=1)[-1]
     return logging.getLogger(f"{LOGGER_ROOT}.{suffix}")
 
 

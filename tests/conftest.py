@@ -18,8 +18,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sentinel.ingest import CorpusConfig, build_event_log, load_corpus  # noqa: E402
-from sentinel.store.sqlite_store import EventStore  # noqa: E402
+from sentinel.ingest import CorpusConfig, build_event_log, load_corpus
+from sentinel.store.sqlite_store import EventStore
 
 #: Fixed for reproducibility; every threshold in the suite was measured at this seed.
 SEED = 11

@@ -25,7 +25,7 @@ class SteppingClock:
     after the traffic that produced them, while staying perfectly reproducible.
     """
 
-    __slots__ = ("_t", "_step")
+    __slots__ = ("_step", "_t")
 
     def __init__(self, start: float, step: float = 30.0) -> None:
         self._t = float(start)

@@ -54,11 +54,21 @@ ignore = [
     "PLR2004",  # magic numbers are readable in rule thresholds and table widths
     "PLR0912",  # renderers branch a lot
     "PLR0915",
+    "PLR0911",  # the audit describer is a flat dispatch over the event vocabulary
+    "PLR0917",
     "B008",
+    "PLW0603",  # ansi caches the resolved charset in one module-level global
+    "UP042",    # Disposition is a str Enum so payloads serialise without a hook
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["PLR2004", "E402"]
+# Tests import inside a function on purpose: to keep a module out of the import
+# graph until the test that needs it runs, and to prove an import is optional.
+"tests/*" = ["PLR2004", "E402", "PLC0415", "B905", "SIM117", "PLW1510", "B017", "RUF015"]
+# msvcrt/termios are platform-specific and ansi's ctypes call is Windows-only; each
+# must not be imported until the branch that needs it runs.
+"sentinel/ui/keys.py" = ["PLC0415"]
+"sentinel/ui/ansi.py" = ["PLC0415"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -67,6 +77,12 @@ ignore_missing_imports = true
 warn_unused_ignores = false
 warn_redundant_casts = true
 no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+# termios and tty are POSIX-only. Their attributes are simply absent from a
+# Windows-hosted typeshed, and the branch that uses them cannot run there either.
+module = "sentinel.ui.keys"
+disable_error_code = ["attr-defined"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -39,7 +39,7 @@ class Disposition(str, enum.Enum):
     ESCALATED = "escalated"
 
     @classmethod
-    def parse(cls, raw: str | "Disposition") -> "Disposition":
+    def parse(cls, raw: str | Disposition) -> Disposition:
         if isinstance(raw, cls):
             return raw
         return cls(str(raw))
@@ -69,7 +69,7 @@ class DomainEvent:
         return out
 
     @classmethod
-    def from_data(cls, data: dict[str, Any]) -> "DomainEvent":
+    def from_data(cls, data: dict[str, Any]) -> DomainEvent:
         return cls(**data)  # type: ignore[call-arg]
 
 

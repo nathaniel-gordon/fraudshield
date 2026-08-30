@@ -14,10 +14,10 @@ appended when one is raised.
 from __future__ import annotations
 
 import math
-from typing import Protocol, Sequence
+from collections.abc import Sequence
+from typing import Protocol
 
 from ..detection.risk_engine import RiskEngine
-from ..errors import CaseAlreadyClosed, OutOfOrder, UnknownCase, ValidationFailed
 from ..domain.clock import Clock
 from ..domain.events import (
     AlertRaised,
@@ -33,9 +33,9 @@ from ..domain.events import (
     case_id_for,
 )
 from ..domain.policy import AlertPolicy
+from ..errors import CaseAlreadyClosed, OutOfOrder, UnknownCase, ValidationFailed
 from ..projections.case_queue import CaseQueueProjection
 from .messages import AdoptDetectionPolicy, DispositionCase, ObserveTransaction
-
 
 #: Bound on a single transaction. Anything larger is a units bug or a corrupt feed,
 #: not a purchase, and letting it through would drag every per-card average with it.
@@ -178,7 +178,7 @@ class ObserveTransactionHandler:
         for cmd in commands:
             self._validate(cmd)
         assessments = self.risk.assess_batch([c.as_txn() for c in commands])
-        return [self._events_for(c, a) for c, a in zip(commands, assessments)]
+        return [self._events_for(c, a) for c, a in zip(commands, assessments, strict=True)]
 
     def _events_for(self, cmd: ObserveTransaction, assessment) -> list[DomainEvent]:
         events: list[DomainEvent] = [

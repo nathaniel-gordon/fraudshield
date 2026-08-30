@@ -11,7 +11,8 @@ it never reads stdin.
 from __future__ import annotations
 
 import sys
-from typing import Iterable, Sequence, TextIO
+from collections.abc import Iterable, Sequence
+from typing import TextIO
 
 from .ansi import CSI, Palette, enable_windows_vt, supports_color
 from .dashboard import Dashboard
@@ -64,7 +65,7 @@ def run_scripted(
         keys_applied.append(key)
     if out is not None:
         wanted = set(range(len(frames))) if show_frames is None else set(show_frames)
-        for index, (frame, key) in enumerate(zip(frames, keys_applied)):
+        for index, (frame, key) in enumerate(zip(frames, keys_applied, strict=True)):
             if index not in wanted:
                 continue
             out.write(f"\n  frame {index + 1}/{len(frames)}  key={key}\n")

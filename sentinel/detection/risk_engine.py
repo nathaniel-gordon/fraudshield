@@ -8,8 +8,8 @@ reason the read side can be rebuilt on a machine that has no scikit-learn loaded
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 import pandas as pd
 
@@ -57,7 +57,7 @@ class RiskEngine:
         feats = [self.stream.extract(t) for t in txns]
         ml_scores = self.models.score(pd.DataFrame(feats)[FEATURES])
         out: list[Assessment] = []
-        for feat, ml in zip(feats, ml_scores):
+        for feat, ml in zip(feats, ml_scores, strict=True):
             rule_score, fires = evaluate(feat)
             out.append(Assessment(ml_score=round(float(ml), 6),
                                   rule_score=round(float(rule_score), 6),

@@ -12,11 +12,7 @@ from __future__ import annotations
 import pytest
 
 from sentinel.domain.events import (
-    AlertRaised,
     CaseOpened,
-    RiskScored,
-    RuleTriggered,
-    TransactionObserved,
 )
 from sentinel.errors import CaseNotFound, ValidationFailed
 from sentinel.projections.registry import ReadModel

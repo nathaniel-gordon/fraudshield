@@ -52,7 +52,7 @@ def test_racing_threads_never_reuse_a_sequence_number(tmp_path):
             start.wait(timeout=30)
             for n in range(10):
                 store.append(_observation(worker * 100 + n, card=f"C{worker:04d}"))
-        except BaseException as exc:  # noqa: BLE001 - reported through the list
+        except BaseException as exc:
             errors.append(exc)
         finally:
             store.close()

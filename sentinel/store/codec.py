@@ -20,7 +20,6 @@ import hashlib
 import json
 from dataclasses import dataclass
 from dataclasses import fields as dataclass_fields
-from functools import lru_cache
 from types import UnionType
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
@@ -133,17 +132,28 @@ def _mentions_tuple(annotation: Any) -> bool:
     return False
 
 
-@lru_cache(maxsize=None)
-def _tuple_fields(cls: type) -> frozenset[str]:
+#: Memoised per event class. ``get_type_hints`` is not cheap and the vocabulary is
+#: fixed at import time, so resolving it once per class is the whole optimisation.
+_TUPLE_FIELDS: dict[str, frozenset[str]] = {}
+
+
+def _tuple_fields(cls: type[DomainEvent]) -> frozenset[str]:
     """Field names whose declared type is (or includes) a tuple.
 
     Resolved from real type objects rather than by sniffing the annotation string,
     so a field annotated ``Sequence[str]`` is not silently mishandled.
     """
+    cached = _TUPLE_FIELDS.get(cls.__name__)
+    if cached is not None:
+        return cached
     hints = get_type_hints(cls)
-    return frozenset(
-        f.name for f in dataclass_fields(cls) if _mentions_tuple(hints.get(f.name))  # type: ignore[arg-type]
+    names = frozenset(
+        f.name
+        for f in dataclass_fields(cls)  # type: ignore[arg-type]
+        if _mentions_tuple(hints.get(f.name))
     )
+    _TUPLE_FIELDS[cls.__name__] = names
+    return names
 
 
 def _coerce(cls: type[DomainEvent], data: dict[str, Any]) -> dict[str, Any]:

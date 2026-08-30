@@ -13,8 +13,8 @@ places, which is three too many for numbers an operator is meant to be able to c
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Mapping
 
 #: Below this the blended score is not interesting; above it a case is opened.
 DEFAULT_RULE_WEIGHT = 0.35
@@ -90,7 +90,7 @@ class AlertPolicy:
         """
         return round(combined * (1.0 + 0.001 * amount), 4)
 
-    def replace(self, **changes: float) -> "AlertPolicy":
+    def replace(self, **changes: float) -> AlertPolicy:
         """Return a variant; the original is untouched (value-object semantics)."""
         return AlertPolicy(
             alert_threshold=changes.get("alert_threshold", self.alert_threshold),

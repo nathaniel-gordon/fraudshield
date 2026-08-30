@@ -23,13 +23,15 @@ name.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sqlite3
 import threading
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping, Sequence
+from typing import Any
 
 from ..domain.events import DomainEvent, index_keys, stream_id_for
 from ..errors import ChainBroken, ConcurrencyConflict, LogCorrupt, StoreError
@@ -113,7 +115,7 @@ class EventStore:
     # -------------------------------------------------------------- lifecycle
 
     @classmethod
-    def create_fresh(cls, path: str | os.PathLike[str], **kwargs: Any) -> "EventStore":
+    def create_fresh(cls, path: str | os.PathLike[str], **kwargs: Any) -> EventStore:
         """Delete any existing log at ``path`` and return an empty one.
 
         The only destructive entry point in the package, and it is a named
@@ -130,14 +132,14 @@ class EventStore:
     def close(self) -> None:
         """Close the connection. Safe to call twice."""
         if not self._closed:
-            try:
+            # Folding the WAL back in is a courtesy to whoever copies the file next,
+            # not a correctness requirement: an un-checkpointed WAL replays on open.
+            with contextlib.suppress(sqlite3.Error):
                 self._con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            except sqlite3.Error:  # pragma: no cover - checkpoint is best effort
-                pass
             self._con.close()
             self._closed = True
 
-    def __enter__(self) -> "EventStore":
+    def __enter__(self) -> EventStore:
         return self
 
     def __exit__(self, *exc: object) -> None:
