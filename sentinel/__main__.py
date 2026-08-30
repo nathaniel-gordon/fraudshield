@@ -20,6 +20,7 @@ and one thing the *operations* of it needs:
     stats           daily volume, alert rate and outcomes
     verify          walk the chain, and check the seal if there is one
     seal            anchor the current head with an HMAC over a key you hold
+    checkpoint      save, list or prune saved read-model state
     export-jsonl    write the grep-able archive
     import-jsonl    rebuild a log from an archive, re-checking every link
 
@@ -45,6 +46,7 @@ from .domain.policy import DEFAULT_FN_COST, DEFAULT_FP_COST, AlertPolicy, CostMo
 from .errors import SentinelError
 from .ingest import BuiltLog, CorpusConfig, alert_quality, build_event_log, load_corpus, wire
 from .obs import configure_logging, correlation_scope, get_logger
+from .projections.checkpoints import CheckpointStore
 from .projections.registry import ReadModel
 from .query.audit import case_trail
 from .query.counterfactual import replay_variants, standard_sweep, sweep_rows
@@ -439,6 +441,51 @@ def cmd_seal(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_checkpoint(args: argparse.Namespace) -> int:
+    """Save, list or prune read-model checkpoints.
+
+    Nothing here touches the event log. A checkpoint is a cache of a fold, so the
+    worst a wrong one can do is be ignored, and pruning them all only costs time.
+    """
+    store = EventStore(paths.input_file(args.log))
+    try:
+        checkpoints = CheckpointStore(store)
+        if args.prune is not None:
+            removed = checkpoints.prune(args.prune)
+            payload = {"pruned": removed, "remaining": checkpoints.count()}
+            if args.json:
+                _emit(payload)
+            else:
+                print(f"  pruned {removed} checkpoint(s), {payload['remaining']} kept")
+            return 0
+
+        if args.list:
+            rows = [c.as_dict() for c in checkpoints.list(args.limit, args.offset)]
+            if args.json:
+                _emit({"checkpoints": rows, "total": checkpoints.count()})
+                return 0
+            _rule(f"CHECKPOINTS — {store.path}")
+            if not rows:
+                print("  none stored; every rebuild folds from record 1")
+            for row in rows:
+                print(f"  seq {row['seq']:>9,}  {row['applied']:>9,} records  "
+                      f"fingerprint {row['fingerprint'][:16]}")
+            return 0
+
+        model = ReadModel.rebuild(store)
+        entry = checkpoints.save(model)
+        if args.json:
+            _emit(entry.as_dict())
+            return 0
+        _rule(f"CHECKPOINT — {store.path}")
+        print(f"  saved the read model as of seq {entry.seq:,} ({entry.applied:,} records)")
+        print(f"  fingerprint {entry.fingerprint}")
+        print(f"  covers {', '.join(entry.names)}")
+    finally:
+        store.close()
+    return 0
+
+
 def cmd_export(args: argparse.Namespace) -> int:
     store = EventStore(paths.input_file(args.log))
     try:
@@ -655,6 +702,12 @@ def build_parser() -> argparse.ArgumentParser:
     sl = sub.add_parser("seal", help="anchor the current head with an HMAC")
     sl.add_argument("--key", default=None, help=f"sealing key; defaults to ${ENV_KEY}")
 
+    cp = sub.add_parser("checkpoint", help="save, list or prune read-model checkpoints")
+    cp.add_argument("--list", action="store_true", help="show what is stored instead of saving")
+    cp.add_argument("--prune", type=int, default=None, metavar="KEEP",
+                    help="delete all but the KEEP newest checkpoints")
+    _paging(cp)
+
     ex = sub.add_parser("export-jsonl", help="write the grep-able archive")
     ex.add_argument("--to", required=True)
 
@@ -684,6 +737,7 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "stats": cmd_stats,
     "verify": cmd_verify,
     "seal": cmd_seal,
+    "checkpoint": cmd_checkpoint,
     "export-jsonl": cmd_export,
     "import-jsonl": cmd_import,
 }

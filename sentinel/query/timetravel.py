@@ -12,13 +12,20 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..errors import CaseNotFound
+from ..projections.checkpoints import rebuild_with_checkpoints
 from ..projections.registry import ReadModel
 from ..store.sqlite_store import EventStore
 
 
 def read_model_as_of(store: EventStore, seq: int) -> ReadModel:
-    """Rebuild every projection over records ``1..seq`` inclusive."""
-    return ReadModel.rebuild(store, upto_seq=seq)
+    """Rebuild every projection over records ``1..seq`` inclusive.
+
+    Resumes from a stored checkpoint when the log has a usable one — this view is
+    reached by a keystroke in the console, so the whole prefix was being folded each
+    time it was opened. The result is the same either way; a checkpoint that cannot
+    be trusted is discarded and the fold starts at record 1.
+    """
+    return rebuild_with_checkpoints(store, upto_seq=seq)
 
 
 def seq_of_case(store: EventStore, case_id: str) -> int | None:

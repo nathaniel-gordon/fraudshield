@@ -160,3 +160,50 @@ def test_bad_paging_is_a_typed_error(capsys, cli_log):
     code, out = run(capsys, ["--log", cli_log, "--json", "cases", "--limit", "0"])
     assert code == 2
     assert json.loads(out)["error"] == "validation_failed"
+
+
+# ------------------------------------------------------------- checkpoints
+
+
+def test_checkpoint_saves_lists_and_prunes(capsys, tmp_path_factory):
+    """The subcommand's three modes, on a log of its own so ordering cannot matter."""
+    path = str(tmp_path_factory.mktemp("cp") / "events.db")
+    assert main(["--log", path, "build", "--cards", "20", "--days", "5"]) == 0
+    capsys.readouterr()  # drop the build chatter; only the json below is read
+
+    empty = run_json(capsys, ["--log", path, "--json", "checkpoint", "--list"])
+    assert empty == {"checkpoints": [], "total": 0}
+
+    saved = run_json(capsys, ["--log", path, "--json", "checkpoint"])
+    assert saved["applied"] > 0
+    assert saved["names"] == ["card_profiles", "case_queue", "daily_metrics", "rule_performance"]
+    assert len(saved["fingerprint"]) == 64
+
+    listed = run_json(capsys, ["--log", path, "--json", "checkpoint", "--list"])
+    assert listed["total"] == 1
+    assert listed["checkpoints"][0]["seq"] == saved["seq"]
+
+    pruned = run_json(capsys, ["--log", path, "--json", "checkpoint", "--prune", "0"])
+    assert pruned == {"pruned": 1, "remaining": 0}
+
+
+def test_replay_agrees_with_itself_after_a_checkpoint(capsys, tmp_path_factory):
+    """A stored checkpoint must not change a single fingerprint the CLI reports."""
+    path = str(tmp_path_factory.mktemp("cpreplay") / "events.db")
+    assert main(["--log", path, "build", "--cards", "20", "--days", "5"]) == 0
+    capsys.readouterr()
+
+    before = run_json(capsys, ["--log", path, "--json", "replay"])
+    run_json(capsys, ["--log", path, "--json", "checkpoint"])
+    after = run_json(capsys, ["--log", path, "--json", "replay"])
+
+    assert after["fingerprints"] == before["fingerprints"]
+    assert after["head_hash"] == before["head_hash"]
+
+
+def test_checkpoint_human_output_mentions_the_sequence(capsys, cli_log):
+    code, text = run(capsys, ["--log", cli_log, "checkpoint"])
+    assert code == 0 and "saved the read model" in text
+    code, text = run(capsys, ["--log", cli_log, "checkpoint", "--list"])
+    assert code == 0 and "fingerprint" in text
+    assert run(capsys, ["--log", cli_log, "checkpoint", "--prune", "0"])[0] == 0
