@@ -35,6 +35,7 @@ from typing import Any
 
 from ..domain.events import DomainEvent, index_keys, stream_id_for
 from ..errors import ChainBroken, ConcurrencyConflict, LogCorrupt, StoreError
+from ..metrics import counter, histogram
 from ..obs import get_logger
 from .codec import (
     GENESIS_HASH,
@@ -189,7 +190,7 @@ class EventStore:
         flat = [ev for group in groups for ev in group.events]
         if not flat:
             return []
-        with self._lock:
+        with histogram("store.append_ms").time(), self._lock:
             con = self._con
             con.execute("BEGIN IMMEDIATE")
             try:
@@ -239,6 +240,7 @@ class EventStore:
                 raise
             self._last_seq, self._head_hash = seq, prev
             self._versions.update(versions)
+        counter("store.events_appended").inc(len(records))
         log.debug(
             "events_committed",
             extra={"count": len(records), "first_seq": records[0].seq, "last_seq": seq},
@@ -474,30 +476,31 @@ class EventStore:
         """
         expected_seq, prev, count = 1, GENESIS_HASH, 0
         cursor = self._con.execute(f"{_SELECT} ORDER BY seq")
-        try:
-            for seq, type_name, prev_hash, digest, data_json in cursor:
-                if seq != expected_seq:
-                    raise ChainBroken(
-                        f"sequence gap: expected {expected_seq}, found {seq}",
-                        expected=expected_seq,
-                        found=seq,
-                    )
-                if prev_hash != prev:
-                    raise ChainBroken(
-                        f"record {seq} does not link to record {seq - 1}", seq=seq
-                    )
-                recomputed = chain_hash_text(prev_hash, seq, type_name, data_json)
-                if recomputed != digest:
-                    raise ChainBroken(
-                        f"record {seq} ({type_name}) fails its own hash — payload was altered",
-                        seq=seq,
-                        type=type_name,
-                    )
-                prev = digest
-                expected_seq += 1
-                count += 1
-        finally:
-            cursor.close()
+        with histogram("store.verify_ms").time():
+            try:
+                for seq, type_name, prev_hash, digest, data_json in cursor:
+                    if seq != expected_seq:
+                        raise ChainBroken(
+                            f"sequence gap: expected {expected_seq}, found {seq}",
+                            expected=expected_seq,
+                            found=seq,
+                        )
+                    if prev_hash != prev:
+                        raise ChainBroken(
+                            f"record {seq} does not link to record {seq - 1}", seq=seq
+                        )
+                    recomputed = chain_hash_text(prev_hash, seq, type_name, data_json)
+                    if recomputed != digest:
+                        raise ChainBroken(
+                            f"record {seq} ({type_name}) fails its own hash — payload was altered",
+                            seq=seq,
+                            type=type_name,
+                        )
+                    prev = digest
+                    expected_seq += 1
+                    count += 1
+            finally:
+                cursor.close()
         return count
 
     # ---------------------------------------------------------------- private

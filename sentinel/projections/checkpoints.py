@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..errors import CheckpointUnusable
+from ..metrics import counter, histogram
 from ..obs import get_logger
 from ..store.sqlite_store import EventStore
 from .registry import ReadModel
@@ -223,15 +224,18 @@ def rebuild_with_checkpoints(store: EventStore, upto_seq: int | None = None) -> 
     checkpoint was actually used, and is 0 when the fold started at the beginning.
     """
     target = upto_seq if upto_seq is not None else store.last_seq
-    model = ReadModel()
-    used = CheckpointStore(store).load_into(model, target)
-    if used is None:
-        # A rejected checkpoint may have restored some projections before the
-        # fingerprint check failed, so the fallback needs a clean model rather than
-        # this half-populated one. Folding onto residue would double-count it.
-        return ReadModel().apply_all(store.read(upto_seq=upto_seq))
-    model.resumed_from = used.seq
-    return model.apply_all(store.read(from_seq=used.seq + 1, upto_seq=upto_seq))
+    with histogram("rebuild.replay_ms").time():
+        model = ReadModel()
+        used = CheckpointStore(store).load_into(model, target)
+        if used is None:
+            counter("rebuild.checkpoint_miss").inc()
+            # A rejected checkpoint may have restored some projections before the
+            # fingerprint check failed, so the fallback needs a clean model rather than
+            # this half-populated one. Folding onto residue would double-count it.
+            return ReadModel().apply_all(store.read(upto_seq=upto_seq))
+        counter("rebuild.checkpoint_hit").inc()
+        model.resumed_from = used.seq
+        return model.apply_all(store.read(from_seq=used.seq + 1, upto_seq=upto_seq))
 
 
 __all__ = ["Checkpoint", "CheckpointStore", "rebuild_with_checkpoints"]

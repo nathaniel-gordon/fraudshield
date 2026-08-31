@@ -40,7 +40,7 @@ from typing import Any
 
 import pandas as pd
 
-from . import paths
+from . import metrics, paths
 from .domain.events import DetectionPolicyAdopted, Disposition
 from .domain.policy import DEFAULT_FN_COST, DEFAULT_FP_COST, AlertPolicy, CostModel
 from .errors import SentinelError
@@ -657,6 +657,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--width", type=int, default=112, help="console width in columns")
     p.add_argument("--height", type=int, default=30, help="console height in rows")
     p.add_argument("--json", action="store_true", help="emit machine-readable output")
+    p.add_argument("--metrics", action="store_true",
+                   help="dump this run's counters and latency histograms as one JSON "
+                        "document on stderr before exiting")
     p.add_argument("--log-level", default=None,
                    help="structured-log level on stderr (DEBUG/INFO/WARNING/ERROR)")
     p.add_argument("--fp-cost", type=float, default=DEFAULT_FP_COST,
@@ -767,6 +770,12 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(f"error [{exc.code}]: {exc.message}", file=sys.stderr)
             return 2
+        finally:
+            if args.metrics:
+                # On stderr like the log lines, so `--json` output on stdout stays
+                # one parseable document.
+                doc = {"command": args.cmd, "correlation_id": cid, **metrics.snapshot()}
+                print(json.dumps(doc, sort_keys=True), file=sys.stderr)
 
 
 if __name__ == "__main__":

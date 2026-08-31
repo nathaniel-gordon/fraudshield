@@ -20,7 +20,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
-from ..errors import NoHandler
+from ..errors import CommandRejected, NoHandler
+from ..metrics import counter, histogram
 from ..obs import Timer, get_logger
 from ..projections.registry import ReadModel
 from ..store.codec import Recorded
@@ -84,6 +85,7 @@ class CommandBus:
         seen = self.store.command_range(key)
         if seen is not None:
             self.duplicates += 1
+            counter("bus.commands_duplicate").inc()
             log.info(
                 "command_deduplicated",
                 extra={"command": type(command).__name__, "command_id": key},
@@ -91,13 +93,18 @@ class CommandBus:
             return self.store.records_between(*seen)
 
         handler = self.handler_for(type(command))
-        events = handler.handle(command)  # type: ignore[attr-defined]
+        try:
+            events = handler.handle(command)  # type: ignore[attr-defined]
+        except CommandRejected:
+            counter("bus.commands_rejected").inc()
+            raise
         records = self.store.append_many(
             events, command_id=key, command_type=type(command).__name__
         )
         for rec in records:
             self.read_model.apply(rec)
         self.accepted += 1
+        counter("bus.commands_accepted").inc()
         return records
 
     def submit_many(
@@ -144,6 +151,9 @@ class CommandBus:
                 progress(done, records_written)
         self.accepted += accepted
         self.duplicates += duplicates
+        counter("bus.commands_accepted").inc(accepted)
+        counter("bus.commands_duplicate").inc(duplicates)
+        histogram("bus.ingest_ms").observe(timer.ms)
         log.info(
             "batch_ingested",
             extra={
