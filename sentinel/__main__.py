@@ -19,6 +19,7 @@ and one thing the *operations* of it needs:
     card            one card's profile and its case history
     stats           daily volume, alert rate and outcomes
     verify          walk the chain, and check the seal if there is one
+    health          is this log fit to serve — exit 0 or 1, for scripts and probes
     seal            anchor the current head with an HMAC over a key you hold
     checkpoint      save, list or prune saved read-model state
     export-jsonl    write the grep-able archive
@@ -32,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -402,6 +404,64 @@ def cmd_stats(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_health(args: argparse.Namespace) -> int:
+    """Readiness probe: can the log be opened and served right now?
+
+    Unlike every other subcommand this one never exits 2 — its contract is a plain
+    healthy/unhealthy answer for a container HEALTHCHECK or a cron wrapper, so any
+    failure to open, read or verify the log is the *answer*, not an error. Exit 0
+    when the log is present, contiguous and self-describing; 1 otherwise.
+
+    The default check is O(1) — head row, count, header. ``--deep`` re-hashes the
+    whole chain, which is the same work as ``verify`` and priced accordingly.
+    """
+    checks: dict[str, Any] = {}
+
+    def report() -> int:
+        healthy = all(v is True for k, v in checks.items() if isinstance(v, bool))
+        status = "ok" if healthy and checks.get("openable") else "fail"
+        if args.json:
+            _emit({"status": status, "log": args.log, "checks": checks})
+        else:
+            print(f"{status}: {args.log}")
+            for name, value in checks.items():
+                print(f"  {name:<18} {value}")
+        return 0 if status == "ok" else 1
+
+    try:
+        path = paths.input_file(args.log)
+    except SentinelError as exc:
+        checks["openable"] = False
+        checks["detail"] = f"{exc.code}: {exc.message}"
+        return report()
+
+    try:
+        store = EventStore(path)
+    except (SentinelError, sqlite3.Error) as exc:
+        checks["openable"] = False
+        checks["detail"] = str(exc)
+        return report()
+
+    try:
+        checks["openable"] = True
+        checks["schema_version"] = store.schema_version
+        checks["records"] = store.last_seq
+        checks["non_empty"] = store.last_seq > 0
+        checks["contiguous"] = store.count() == store.last_seq
+        header = store.header()
+        checks["self_describing"] = header is not None and isinstance(
+            header.event, DetectionPolicyAdopted
+        )
+        if args.deep:
+            checks["chain_verified"] = store.verify() == store.last_seq
+    except (SentinelError, sqlite3.Error) as exc:
+        checks["detail"] = str(exc)
+        checks["readable"] = False
+    finally:
+        store.close()
+    return report()
+
+
 # ------------------------------------------------------------------ evidence
 
 
@@ -704,6 +764,10 @@ def build_parser() -> argparse.ArgumentParser:
     st = sub.add_parser("stats", help="daily volume, alert rate and outcomes")
     st.add_argument("--since-day", type=int, default=None)
 
+    h = sub.add_parser("health", help="exit 0 when the log is fit to serve, 1 otherwise")
+    h.add_argument("--deep", action="store_true",
+                   help="also re-hash the whole chain (the same work as `verify`)")
+
     v = sub.add_parser("verify", help="walk the chain and check any seal")
     v.add_argument("--key", default=None, help=f"sealing key; defaults to ${ENV_KEY}")
     v.add_argument("--require-seal", action="store_true",
@@ -745,6 +809,7 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "case": cmd_case,
     "card": cmd_card,
     "stats": cmd_stats,
+    "health": cmd_health,
     "verify": cmd_verify,
     "seal": cmd_seal,
     "checkpoint": cmd_checkpoint,
