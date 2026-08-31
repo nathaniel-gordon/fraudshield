@@ -10,7 +10,7 @@
 # Query:   docker run --rm -v fraudshield-data:/data fraudshield --json cases
 # Console: docker run --rm -it -v fraudshield-data:/data fraudshield dashboard
 
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 
 # Wheels only — nothing here should ever need a compiler. If a dependency stops
 # shipping a manylinux wheel, this line failing is the early warning.
@@ -20,7 +20,7 @@ RUN python -m venv /opt/venv \
        -r /tmp/requirements.txt
 
 
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
