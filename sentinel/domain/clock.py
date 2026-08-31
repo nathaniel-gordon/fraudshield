@@ -35,14 +35,3 @@ class SteppingClock:
         self._t += self._step
         return round(self._t, 3)
 
-
-class FrozenClock:
-    """Always returns the same instant — used by tests that pin exact payloads."""
-
-    __slots__ = ("_t",)
-
-    def __init__(self, at: float) -> None:
-        self._t = float(at)
-
-    def now(self) -> float:
-        return self._t

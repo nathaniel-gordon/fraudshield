@@ -4,7 +4,7 @@ Nothing in here imports a store, a projection, a command handler or the UI. The
 dependency arrow points inward only, so the vocabulary of the business stays
 independent of how it happens to be persisted or displayed.
 """
-from .clock import Clock, FrozenClock, SteppingClock
+from .clock import Clock, SteppingClock
 from .events import (
     EVENT_TYPES,
     AlertRaised,
@@ -32,7 +32,6 @@ __all__ = [
     "DetectionPolicyAdopted",
     "Disposition",
     "DomainEvent",
-    "FrozenClock",
     "RiskScored",
     "RuleTriggered",
     "SteppingClock",
