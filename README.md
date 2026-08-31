@@ -35,7 +35,17 @@ python -m sentinel dashboard             # live analyst console on the log demo 
 ```
 
 `demo` writes `output/events.db` and needs no arguments. `dashboard` needs a log to
-exist first; it loads no model and imports no scikit-learn.
+exist first; it loads no model and imports no scikit-learn (a test runs a query in a
+fresh interpreter and fails if the ML stack appears in `sys.modules`).
+
+Or in a container — the log lives on the volume, so it outlives the container:
+
+```bash
+docker build -t fraudshield .
+docker run --rm -v fraudshield-data:/data fraudshield demo
+docker run --rm -v fraudshield-data:/data fraudshield --json cases --limit 5
+docker run --rm -it -v fraudshield-data:/data fraudshield dashboard
+```
 
 ## Operational commands
 
@@ -51,6 +61,7 @@ python -m sentinel stats --since-day 30                  # daily volume, alert r
 python -m sentinel replay                                # rebuild projections, print fingerprints
 python -m sentinel counterfactual --fp-cost 12 --fn-cost 450
 python -m sentinel verify                                # walk the chain, check any seal
+python -m sentinel health                                # exit 0/1: fit to serve? (--deep re-hashes)
 python -m sentinel seal                                  # anchor the head (needs FRAUDSHIELD_SEAL_KEY)
 python -m sentinel checkpoint                            # save the read model so rebuilds resume
 python -m sentinel checkpoint --list                     # what is stored; --prune N keeps the N newest
@@ -113,6 +124,25 @@ passes clean. `test_event_store.py::test_a_fully_recomputed_chain_still_verifies
 asserts exactly that, so nothing in this repo can quietly claim otherwise. The seal is
 what closes it, and only while the key lives somewhere the log's writer cannot reach.
 
+## Observability
+
+Three surfaces, all off by default and all on stderr, so stdout stays one parseable
+document under `--json`:
+
+- **Structured logs** — one JSON object per line, with a correlation id binding a
+  CLI invocation to every command it submitted and record it committed. Level via
+  `FRAUDSHIELD_LOG_LEVEL` or `--log-level`; card ids are masked, amounts and the
+  seal key are never logged. `python -m sentinel build 2> run.jsonl` captures them.
+- **Metrics** — `--metrics` on any command dumps that run's counters and latency
+  histograms as one JSON document at exit: `store.events_appended`,
+  `store.append_ms`, `store.verify_ms`, `bus.commands_accepted` / `_duplicate` /
+  `_rejected`, `bus.ingest_ms`, `rebuild.checkpoint_hit` / `_miss`,
+  `rebuild.replay_ms`. Per-process by design — there is no daemon to scrape; see
+  `docs/adr/0005-metrics-as-exit-dump.md`.
+- **Health** — `health` answers "is this log fit to serve" with exit 0/1 and never
+  exit 2, so a probe that crashes can't read as healthy. The shallow check is O(1);
+  `--deep` re-hashes the whole chain. It is the Docker image's `HEALTHCHECK`.
+
 ## Test
 
 ```bash
@@ -121,6 +151,16 @@ python -m pytest tests -q --cov=sentinel        # with coverage
 python -m ruff check . && python -m mypy        # lint and types, both configured in pyproject
 ```
 
+The suite is organised by what could break: store guarantees and tampering
+(`test_event_store`), crash recovery with a real killed child process
+(`test_crash_recovery`), eight racing writers (`test_concurrency`), idempotent
+redelivery (`test_idempotency`), replay identity and time travel (`test_replay_identity`,
+`test_query`), the seal (`test_seal`), checkpoint honesty (`test_checkpoints`),
+validation (`test_validation`), the console as a pure function (`test_dashboard`),
+the CLI end to end (`test_cli`), the probe (`test_health`), the metrics registry
+(`test_metrics`), and one pinned test per fixed security hole
+(`test_security_regressions`).
+
 ## Measured on this machine
 
 Every number here came from a command in this repo, run on Windows 10 with Python
@@ -128,15 +168,15 @@ Every number here came from a command in this repo, run on Windows 10 with Pytho
 
 | Measurement | Value | Command |
 |---|---|---|
-| Demo end to end | 36.7 s | `python -m sentinel demo`, wall clock around the subprocess |
+| Demo end to end | 40.0 s | `python -m sentinel demo`, wall clock around the subprocess |
 | Records written | 78,046 | `python -m sentinel --json info` |
-| Log size on disk | 45.1 MB | same log, `os.path.getsize` |
-| Chain verification | 0.33 s | `python -m sentinel verify` |
-| Full projection rebuild | 1.25 s | `ReadModel.rebuild(store)` on that log |
-| Rebuild resumed from a checkpoint | 0.09 s | `rebuild_with_checkpoints(store)`, same fingerprint |
-| One case's audit trail | 0.4 ms | `case_trail(store, case_id)` on that log |
+| Log size on disk | 44.5 MB | same log, `os.path.getsize` |
+| Chain verification | 0.32 s | `python -m sentinel verify` |
+| Full projection rebuild | 1.17 s | `ReadModel.rebuild(store)` on that log |
+| Rebuild resumed from a checkpoint | 0.08 s | `rebuild_with_checkpoints(store)`, same fingerprint |
+| One case's audit trail | 0.5 ms | `case_trail(store, case_id)` on that log |
 | Alerts with no rule reason | 143 of 621 (23.0%) | scan of the demo's own `output/events.db` |
-| Test suite | 221 tests, 92% line coverage | `python -m pytest tests -q --cov=sentinel` |
+| Test suite | 250 tests, 93% line coverage | `python -m pytest tests --cov=sentinel` |
 
 Detection quality on the demo corpus, from `output/run_report.md` written by
 `python -m sentinel demo`: AUC 1.0 and average precision 0.9973 on the temporal
@@ -189,6 +229,31 @@ Copy `.env.example`. Nothing is read automatically; export what you need.
 | `FRAUDSHIELD_LOG_LEVEL` | verbosity of the JSON log lines on stderr. Default `WARNING`. |
 
 There are no secrets in this repository and none are needed to run it.
+
+## Deployment
+
+There is no deployment today — no service, no live URL. If you want to run it on a
+host you own, `docs/deployment.md` covers the one target that fits the architecture
+(a single Docker host with the log on a named volume), including migrations, health
+checks, sealing, rollback and troubleshooting. CI builds the image and probes it on
+every push.
+
+## Roadmap
+
+Ordered by what the limitations above make most pressing; none of it is promised.
+
+- A checkpoint cadence policy, so a long-grown log doesn't pay the whole tail fold.
+- Memory-bounded projections (evict closed cases / cold cards) for logs that outgrow RAM.
+- An importer for a real transaction export format, so the detection numbers can
+  mean something beyond the generator.
+- Periodic background sealing driven by the job runner, with receipts shipped off-host.
+
+## Contributing
+
+`CONTRIBUTING.md` has setup, the rules the suite enforces, and commit conventions.
+`SECURITY.md` says how to report anything exploitable and states the threat model
+honestly. The load-bearing design decisions are written down in `docs/adr/` — argue
+with those files, not with the code that implements them.
 
 ---
 
