@@ -17,6 +17,7 @@ from typing import Any
 
 import pandas as pd
 
+from . import paths
 from .commands.bus import DEFAULT_BATCH, CommandBus
 from .commands.handlers import (
     AdoptDetectionPolicyHandler,
@@ -80,7 +81,10 @@ def load_corpus(csv_path: str | Path | None, config: CorpusConfig) -> pd.DataFra
             seed=config.seed,
             fraud_rate=config.fraud_rate,
         )
-    df = pd.read_csv(csv_path)
+    # Resolved through paths.input_file, never handed to pandas raw: read_csv
+    # accepts https:// and s3:// URLs, and a --data argument must not be able to
+    # turn into an outbound fetch.
+    df = pd.read_csv(paths.input_file(csv_path))
     missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
     if missing:
         raise ValueError(f"transaction export is missing required columns: {missing}")
