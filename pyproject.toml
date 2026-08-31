@@ -69,6 +69,9 @@ ignore = [
 # must not be imported until the branch that needs it runs.
 "sentinel/ui/keys.py" = ["PLC0415"]
 "sentinel/ui/ansi.py" = ["PLC0415"]
+# scikit-learn loads only when a model is actually fitted; the read side must run
+# without it (test_security_regressions pins this).
+"sentinel/detection/ensemble.py" = ["PLC0415"]
 
 [tool.mypy]
 python_version = "3.11"

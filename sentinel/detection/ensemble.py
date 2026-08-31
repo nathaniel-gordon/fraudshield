@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import GradientBoostingClassifier, IsolationForest
-from sklearn.metrics import average_precision_score, precision_recall_curve, roc_auc_score
 
 from .features import FEATURES
+
+# scikit-learn is imported inside the methods that fit and evaluate, not here. The
+# CLI's import graph reaches this module on every invocation, and the read side —
+# replay, audit, health, the dashboard — must be able to run without the ML stack
+# ever loading. Only `build` and `demo` pay for it.
 
 #: Fraction of the timeline used for fitting. The rest is held out, in time order,
 #: so the evaluation is a forecast rather than an interpolation.
@@ -27,6 +30,8 @@ def temporal_split(feat: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 class FraudModels:
     def __init__(self, seed: int = 42, fp_cost: float = 12.0, fn_cost: float = 450.0):
+        from sklearn.ensemble import GradientBoostingClassifier, IsolationForest
+
         self.seed = seed
         self.fp_cost = fp_cost      # analyst time to clear a false alert
         self.fn_cost = fn_cost      # average loss of a missed fraud txn
@@ -42,6 +47,8 @@ class FraudModels:
         the alert policy uses: see :mod:`sentinel.detection.tuning`, which tunes the
         blended score the policy actually compares.
         """
+        from sklearn.metrics import average_precision_score, roc_auc_score
+
         tr, te = temporal_split(feat)
         x_tr, y_tr = tr[FEATURES], tr["fraud"]
         x_te, y_te = te[FEATURES], te["fraud"]
@@ -79,6 +86,8 @@ class FraudModels:
 
     def _tune_threshold(self, y: np.ndarray, proba: np.ndarray) -> float:
         """Pick the threshold minimizing expected cost fp_cost*FP + fn_cost*FN."""
+        from sklearn.metrics import precision_recall_curve
+
         _, _, thr = precision_recall_curve(y, proba)
         cands = np.unique(np.round(thr, 3))
         if len(cands) > 200:
