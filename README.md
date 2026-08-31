@@ -170,7 +170,7 @@ Every number here came from a command in this repo, run on Windows 10 with Pytho
 |---|---|---|
 | Demo end to end | 40.0 s | `python -m sentinel demo`, wall clock around the subprocess |
 | Records written | 78,046 | `python -m sentinel --json info` |
-| Log size on disk | 44.5 MB | same log, `os.path.getsize` |
+| Log size on disk | 46.7 MB | same log, `os.path.getsize` |
 | Chain verification | 0.32 s | `python -m sentinel verify` |
 | Full projection rebuild | 1.17 s | `ReadModel.rebuild(store)` on that log |
 | Rebuild resumed from a checkpoint | 0.08 s | `rebuild_with_checkpoints(store)`, same fingerprint |
