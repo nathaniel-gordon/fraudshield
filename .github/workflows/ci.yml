@@ -43,3 +43,23 @@ jobs:
 
       - name: The log it wrote verifies
         run: python -m sentinel --log ci.db --json verify
+
+      - name: And reports healthy
+        run: python -m sentinel --log ci.db --json health
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -t fraudshield .
+
+      - name: Ingest a small corpus onto the volume
+        run: docker run --rm -v fs-ci:/data fraudshield build --cards 60 --days 10
+
+      - name: The container reports healthy
+        run: docker run --rm -v fs-ci:/data fraudshield --json health
+
+      - name: Deep verify from inside the container
+        run: docker run --rm -v fs-ci:/data fraudshield --json health --deep
