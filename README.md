@@ -175,8 +175,8 @@ Every number here came from a command in this repo, run on Windows 10 with Pytho
 | Full projection rebuild | 1.17 s | `ReadModel.rebuild(store)` on that log |
 | Rebuild resumed from a checkpoint | 0.08 s | `rebuild_with_checkpoints(store)`, same fingerprint |
 | One case's audit trail | 0.5 ms | `case_trail(store, case_id)` on that log |
-| Alerts with no rule reason | 143 of 621 (23.0%) | scan of the demo's own `output/events.db` |
-| Test suite | 250 tests, 93% line coverage | `python -m pytest tests --cov=sentinel` |
+| Alerts with no rule reason | 143 of 621 (23.0→) | scan of the demo's own `output/events.db` |
+| Test suite | 250 tests, 93→ line coverage | `python -m pytest tests --cov=sentinel` |
 
 Detection quality on the demo corpus, from `output/run_report.md` written by
 `python -m sentinel demo`: AUC 1.0 and average precision 0.9973 on the temporal
@@ -201,9 +201,9 @@ Stated plainly, because the rest of this README is only worth reading if this se
 - **The rules layer does not pay for itself on this corpus.** The demo's own
   counterfactual table prints it: at $12/FP and $450/FN the recorded policy costs
   $1,500 against $510 for "model only (rules muted)". The rules are kept for
-  explainability — 77% of alerts carry a human-readable reason because of them — not
+  explainability — 77→ of alerts carry a human-readable reason because of them — not
   because they improve the cost. On a real corpus this trade-off would need re-deciding.
-- **23% of alerts carry no reason.** The model alerted and no rule fired; the console
+- **23→ of alerts carry no reason.** The model alerted and no rule fired; the console
   says "model-only alert" rather than inventing one.
 - **The seal is only as good as where the key lives.** Held next to the log it proves
   nothing. An attacker with write access can also delete seal rows — visibly, which is
